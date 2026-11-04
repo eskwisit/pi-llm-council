@@ -16,23 +16,47 @@ It combines two designs:
 
 ## The council
 
-| Advisor | Model | Lens |
+| Advisor | Lens | Cast on |
 |---|---|---|
-| The Contrarian | Opus | Assumes there is a fatal flaw and finds it |
-| The First Principles Thinker | Opus | What are we actually trying to solve? Reframes the question |
-| The Expansionist | Gemini Flash | The upside everyone is missing |
-| The Outsider | Gemini Flash | Fresh eyes, no context; catches the curse of knowledge |
-| The Executor | Sonnet | Can it be done, and what do you do Monday morning? |
-| Chairman | Opus | Synthesizes the answers and reviews into the verdict |
-| Clerk | Gemini Flash | Titles the run |
+| The Contrarian | Assumes there is a fatal flaw and finds it | your strongest reasoning model |
+| The First Principles Thinker | What are we actually trying to solve? Reframes | your strongest reasoning model |
+| The Expansionist | The upside everyone is missing | a strong model, ideally another vendor |
+| The Outsider | Fresh eyes, no context; catches the curse of knowledge | a strong model, ideally another vendor |
+| The Executor | Can it be done? What do you do Monday morning? | a strong practical model |
+| Chairman | Synthesizes the answers and reviews into the verdict | your strongest reasoning model |
+| Clerk | Titles the run | your cheapest fast model |
 
 The lenses create three tensions:
 - **Contrarian ↔ Expansionist:** downside against upside.
 - **First Principles ↔ Executor:** rethink it against just do it.
 - **The Outsider** keeps everyone honest.
 
-The model mix adds Karpathy's diversity: two vendors with different blind spots, reviewing each
-other.
+Casting different vendors adds Karpathy's model diversity, because different models have
+different blind spots.
+
+## Your models, not ours
+
+Nothing in the plugin names a model. PI-Desktop gives every agent the list of models you can
+delegate to (Anthropic, OpenAI, Google, xAI, OpenRouter, a local model, and so on).
+
+**The first time you convene the council:**
+1. The orchestrator reads that list.
+2. It casts each seat by the strength the lens needs, plus 1–3 fallbacks, preferring vendor
+   diversity.
+3. It shows you the cast to confirm.
+4. It saves the cast to `~/.llm-council/cast.json`.
+
+Later runs reuse that cast until one of its models disappears from your list.
+
+**To rule out a model or provider,** for example a free tier that stalls under load:
+
+```bash
+python3 scripts/council.py config --exclude 'google/*' --note 'Gemini is free tier'
+```
+
+Exclusions live in `~/.llm-council/config.json`, and the cast is checked against them. With no
+delegation models configured, every seat uses the session model. The council still runs, but
+without model diversity.
 
 ## How a session runs
 
@@ -55,8 +79,8 @@ Each run is saved under `.llm-council/runs/<timestamp>/` in your workspace as `r
 | Part | Where | Role |
 |---|---|---|
 | Orchestrator agent | `skills/llm-council.md`, a plugin skill | Framing, stages, anonymity, failover, presentation |
-| Persona sub-agents | `subagents/*.md`, installed to `~/.agents/subagents/` | `council-contrarian`, `council-first-principles`, `council-expansionist`, `council-outsider`, `council-executor`, `council-chairman`, `council-clerk`. Each pins its lens, model chain, thinking level, Read/Write tools and timeouts |
-| Helper | `scripts/council.py` | Prompts, anonymization, ranking parser, per-advisor scoring, failover bookkeeping, reports, persona install |
+| Persona sub-agents | `subagents/*.md`, installed to `~/.agents/subagents/` | `council-contrarian`, `council-first-principles`, `council-expansionist`, `council-outsider`, `council-executor`, `council-chairman`, `council-clerk`. Each carries its lens, thinking level, Read/Write tools and timeouts. None names a model |
+| Helper | `scripts/council.py` | Catalog parsing, cast validation and reuse, exclusions, prompts, anonymization, ranking parser, per-advisor scoring, failover bookkeeping, reports, persona install |
 
 PI-Desktop plugins can contribute skills but not sub-agents, and sub-agents are global-only. So the
 plugin ships the persona files, and the skill installs them on first use with
@@ -77,14 +101,17 @@ The council is for decisions with real stakes, not for lookups or writing tasks.
 `~/.llm-council/private/`, outside every path a sub-agent can read. Reviewers only ever see
 Response A–E.
 
-**Failover.** No seat dangles and no failed model is retried. Failover has three layers:
-- **Native:** PI-Desktop switches a delegation to the persona's next model on a model error.
-- **Heartbeat:** a seat with no activity 45 s after launch is relaunched on the next model.
-- **Watchdog:** idle and maximum-duration limits catch a seat that stalls later.
+**Failover.** No seat dangles and no failed model is retried. A seat that errors, shows no
+activity 45 s after launch, stalls past its idle or maximum time, or ends without output is
+stopped. It is then relaunched on the next model in its cast chain.
 
-A model that fails anywhere in a run is skipped for every later seat. Every substitution is logged
-in the report, with the model that actually answered. The persona files are the single source of
-truth for models and chains (`python3 scripts/council.py chain <seat>`).
+The chain for each seat is:
+1. its primary model;
+2. the same model through your other accounts, which the helper adds automatically;
+3. the fallbacks you confirmed.
+
+A model that fails anywhere in a run is skipped for every later seat. Every substitution is
+logged in the report.
 
 ## Credits
 
