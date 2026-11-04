@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "local.llm-council",
+  "id": "eskwisit.llm-council",
   "name": "LLM Council",
   "version": "0.0.1",
-  "description": "Karpathy-style LLM Council: Opus, Sonnet and Gemini Flash answer in parallel, anonymously peer-review and rank each other, and an Opus chairman synthesizes the final answer.",
-  "author": "local",
-  "homepage": "https://github.com/karpathy/llm-council",
+  "description": "Karpathy-style LLM Council: Opus, Sonnet and Gemini Flash persona sub-agents answer in parallel, anonymously peer-review and rank each other, and an Opus chairman synthesizes the final answer.",
+  "author": "eskwisit",
+  "homepage": "https://github.com/eskwisit/pi-llm-council",
   "categories": [
     "productivity"
   ],
@@ -18,7 +18,7 @@
       "skills/llm-council.md"
     ]
   },
-  "safetyNotes": "Declarative skill only. agent.prompt.inject is used solely to index the LLM Council skill for the agent's Skill tool. main.js does nothing at runtime. The bundled scripts/council.py is run by the agent itself (via its normal shell tool) to anonymize answers, parse rankings and write a report inside the workspace run directory; it makes no network calls.",
+  "safetyNotes": "Declarative skill only. agent.prompt.inject is used solely to index the LLM Council skill for the agent's Skill tool; main.js does nothing at runtime. The bundled scripts/council.py is run by the agent through its normal shell tool: it anonymizes answers, parses rankings and writes a report in the workspace run directory, and on request copies the five council sub-agent definitions (subagents/*.md) to ~/.agents/subagents, the only place PI-Desktop loads sub-agents from. It makes no network calls.",
   "engines": {
     "piDesktop": ">=0.9.0"
   }
