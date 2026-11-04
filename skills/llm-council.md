@@ -19,9 +19,9 @@ The design combines two sources:
 question ─► CAST      read the user's delegation models, assign one per seat (reuse a saved cast)
           ─► FRAME     read workspace context, write one neutral framed question
           ─► STAGE 1  five advisors answer in parallel, each from its lens, on its cast model
-          ─► anonymize as Response A–E (shuffled; map and answers moved out of reach)
+          ─► anonymize as Response A–E (shuffled; the plugin keeps who wrote which)
           ─► STAGE 2  five fresh sessions review ALL answers: strongest / blind spot / all missed + FINAL RANKING
-          ─► aggregate "street cred" = average rank per advisor
+          ─► tally     "street cred" = average rank per advisor
           ─► STAGE 3  chairman sees everything de-anonymized and writes the verdict
 ```
 
@@ -57,31 +57,37 @@ The personas carry lens, tools (Read/Write; the clerk has only Write) and timeou
 model**. Models are cast per user, at run time, from their own catalog. Never use generic
 sub-agents (`explorer`, `fixer`, …) for a seat.
 
+## The council tools
+
+The plugin registers four tools. They may be listed as on-demand tools under a plugin-prefixed
+name ending in `council_config`, `council_anonymize`, `council_tally` and `council_report`; if they
+are not active yet, call `ToolSearch` with `council` to activate them. Only you call them, never a
+sub-agent. They work in Agent mode only.
+
+| Tool | Does |
+|---|---|
+| `council_config` | Reads or saves the cast, the model exclusions and notes; reports whether the personas are installed |
+| `council_anonymize` | Shuffles the Stage 1 answers into `stage2_prompt.md` and hides who wrote which |
+| `council_tally` | Parses the Stage 2 rankings, writes `aggregate.json` and the chairman's `stage3_prompt.md` |
+| `council_report` | Writes `report.md` and `transcript.json` |
+
 ## Setup
 
-1. **Locate the helper.**
-   `H=$(ls ~/.pi-desktop/plugins/installed/*llm-council*/scripts/council.py 2>/dev/null | head -1)`.
-   If that is empty, use
-   `find ~ -path '*llm-council*/scripts/council.py' -not -path '*/node_modules/*' 2>/dev/null | head -1`.
-2. **Check the personas.** Run `python3 "$H" install-subagents --check`.
-   - If anything is missing, outdated or obsolete, run `python3 "$H" install-subagents`.
-   - The seven `council-*` sub-agents must appear in your Task agent list. If they don't, tell the
-     user to start a new session, and stop.
-3. **Create the run directory.** Use `RUN=.llm-council/runs/<YYYYmmdd-HHMMSS>`, with
-   `stage1/ stage2/ stage3/`, **inside the workspace**: sub-agents read and write
-   workspace-relative paths.
-   - If no workspace is open, use `$PI_SCRATCH_DIR/llm-council/<timestamp>` with absolute paths.
-   - The helper keeps the cast, the failover log and the secret label map in
-     `~/.llm-council/private/`, out of every sub-agent's reach.
+1. **Check the personas.** Call `council_config` with `models` set to the model ids of your
+   "Available models for delegation" list (an empty list if there is none). Its `personas` field
+   says whether the plugin installed the seven `council-*` sub-agents. They must appear in your
+   Task agent list. If they don't, tell the user to start a new session, and stop.
+2. **Pick the run directory.** Use `RUN=.llm-council/runs/<YYYYmmdd-HHMMSS>`, **inside the
+   workspace**: sub-agents read and write workspace-relative paths, and the council tools only
+   reach `.llm-council/`. Writing the first file creates the directory. If no workspace is open,
+   ask the user to open a folder, and stop.
 
 ## Step 0: cast the council
 
-1. **Record the catalog.** Pipe the "Available models for delegation" list from your own system
-   prompt, verbatim, into `python3 "$H" models $RUN`. Excluded models are marked. Note any user
-   notes it prints, such as "free tier".
-2. **Reuse a saved cast if possible.** Run `python3 "$H" cast $RUN --reuse`. If it exits 0, use
-   that cast and go to Step 1. Exit 4 means there is no saved cast or it is stale.
-3. **Cast from the non-excluded models.** For each seat, give an ordered list: the primary model,
+1. **Reuse a saved cast if possible.** The `council_config` result from Setup has `castUsable`,
+   `cast`, `staleSeats`, `excludedModels` and `notes`. Note any user notes, such as "free tier".
+   If `castUsable` is true, use that cast and go to Step 1.
+2. **Cast from the non-excluded models.** For each seat, give an ordered list: the primary model,
    then 1–3 fallbacks.
    - **Match the "Model to cast" column above**, using what you know about each model. Prefer
      `reasoning` models for the Opus-like seats and fast `standard` ones for the clerk.
@@ -90,17 +96,18 @@ sub-agents (`explorer`, `fixer`, …) for a seat.
    - **Avoid free-tier, preview or rate-limited models** for advisors and the chairman. They stall
      and slow the whole council.
    - **Fallbacks:** list the next best model of a similar strength, preferably from another
-     account or vendor. The helper adds the same model through other accounts automatically.
-4. **Confirm with the user.** Show the cast as a table (seat, lens, model, fallbacks) and ask the
+     account or vendor. The tool adds the same model through other accounts automatically.
+3. **Confirm with the user.** Show the cast as a table (seat, lens, model, fallbacks) and ask the
    user to confirm or change it. Ask once; later runs reuse it.
    - If the user rules out a model or provider ("Gemini is free tier"), record it with
-     `python3 "$H" config --exclude '<glob, e.g. google/*>' --note '<why>'` and recast.
-5. **Save the cast.** Pipe the cast to the helper as JSON:
-   `python3 "$H" cast $RUN <<< '{"contrarian": ["<id>", "<fallback>"], ..., "clerk": ["<id>"]}'`.
-   It rejects unknown or excluded ids, prints warnings (for example, no vendor diversity) and
-   saves the cast for reuse.
-6. **No catalog.** If the catalog is empty, cast every seat as `["inherit"]`, launch every seat
-   without `model`, and warn the user that the council has no model diversity.
+     `council_config` `{ action: "set", exclude: ["google/*"], notes: ["Gemini is free tier"] }`
+     and recast.
+4. **Save the cast.** Call `council_config` `{ action: "set", models: [...], cast: { "contrarian":
+   ["<id>", "<fallback>"], …, "clerk": ["<id>"] } }` with every seat. It rejects unknown or
+   excluded ids, returns warnings (for example, no vendor diversity) and the final `cast`, whose
+   chains you use from now on.
+5. **No catalog.** If you have no delegation models, cast every seat as `["inherit"]`, launch every
+   seat without `model`, and warn the user that the council has no model diversity.
 
 ## Step 1: frame the question
 
@@ -123,13 +130,13 @@ sub-agents (`explorer`, `fixer`, …) for a seat.
 
 ## Briefs
 
-Launch every seat with `model:` set to the output of `python3 "$H" next ...` (omit `model` only
-when it prints `inherit`). Always start a **new** delegation; never `resume`.
+Launch every seat with `model:` set to its current model (see Failover; omit `model` only for
+`inherit`). Always start a **new** delegation; never `resume`.
 
 | Delegation | Agent | Brief |
 |---|---|---|
-| Stage 1 | `python3 "$H" agent <seat>` | `Stage 1. The question is in <RUN>/question.md. Save your answer to <RUN>/stage1/<seat>.md.` Add `Length: up to 600 words.` if the question needs more room. |
-| Title | `council-clerk` | `Write the result to <RUN>/title.txt. Prompt:` followed by the output of `python3 "$H" title-prompt $RUN`. |
+| Stage 1 | the seat's `council-*` persona | `Stage 1. The question is in <RUN>/question.md. Save your answer to <RUN>/stage1/<seat>.md.` Add `Length: up to 600 words.` if the question needs more room. |
+| Title | `council-clerk` | `Write the result to <RUN>/title.txt. Prompt: Write a title of 3 to 5 words for the question below, with no quotes and no punctuation.` followed by a blank line and the user's words from `user_question.md` (cut to 2000 characters). |
 | Stage 2 | the same advisor persona, in a fresh session | `Stage 2. The review prompt is <RUN>/stage2_prompt.md. Save your review to <RUN>/stage2/<seat>.md.` |
 | Stage 3 | `council-chairman` | `The chairman prompt is <RUN>/stage3_prompt.md. Save the council verdict to <RUN>/stage3/chairman.md.` |
 
@@ -138,7 +145,9 @@ path yourself, unchanged.
 
 ## Failover: no seat dangles
 
-The model that fails is never retried, and it is skipped by every later seat and stage of the run.
+Keep, for this run: each seat's chain (from the cast), the model each seat is on in each stage,
+and the set of models that **failed anywhere in the run**. A failed model is never retried, and it
+is skipped by every later seat and stage of the run.
 
 A seat has **failed** when any of these happens:
 - **Error:** the delegation ends failed or stopped, or reports an error (503, overloaded, rate
@@ -151,12 +160,16 @@ A seat has **failed** when any of these happens:
 
 When a seat fails, in the same turn:
 1. If it is still running, `TaskStop` it.
-2. Run `M=$(python3 "$H" next $RUN <stage> <seat> --failed <its model> --reason "<short reason>")`.
-   This logs the failure, deletes partial output and prints the next untried model in the seat's
-   chain.
-3. Relaunch the same persona as a fresh delegation with `model: M`.
-4. If `next` prints `EXHAUSTED` (exit 3), drop the seat. This is the original's graceful
-   degradation.
+2. Add its model to the failed set and record a failover: `{ stage, seat, failed: <model>, reason:
+   <short reason>, next: <next model or empty> }`.
+3. The next model is the first one in the seat's chain, after the failed one, that is not in the
+   failed set. Relaunch the same persona as a fresh delegation on it; its Write replaces any
+   partial output.
+4. If no model is left, drop the seat: write an empty file to its output path so partial output
+   is not counted. This is the original's graceful degradation.
+
+The first model of a seat in each stage is the first one in its chain that is not in the failed
+set.
 
 **Watch loop:** call `TaskWait` with `mode: "any"` and `minCompleted: 1`. Use `timeoutSeconds: 45`
 while any seat is still waiting for its first tool call; after that, use the shortest remaining
@@ -164,26 +177,27 @@ deadline. Handle each seat the moment it settles or misses a deadline.
 
 ## Procedure
 
-1. **Cast and frame:** Step 0, then Step 1.
+1. **Cast and frame:** Setup, Step 0, then Step 1.
 2. **Stage 1.**
-   - Run `M=$(python3 "$H" next $RUN stage1 <seat>)` for each seat in `python3 "$H" seats`, and
-     `next $RUN title clerk`.
    - Start the five advisors and the clerk in ONE message, then run the watch loop.
-   - If every advisor seat is exhausted, run `report` and tell the user that all models failed to
-     respond.
-3. **Anonymize:** `python3 "$H" stage2-prompt $RUN`.
+   - If every advisor seat is dropped, call `council_report` and tell the user that all models
+     failed to respond.
+3. **Anonymize:** call `council_anonymize` `{ run, models: { <seat>: <model it answered on>, … } }`.
+   It writes `stage2_prompt.md` and empties the Stage 1 files; the plugin keeps the answers and
+   the label map. If it warns that the prompt is long, add `Read it in pages with offset.` to the
+   Stage 2 briefs.
 4. **Stage 2.**
-   - Run `next $RUN stage2 <seat>` for **every** advisor seat. A seat whose Stage 1 answer failed
-     still reviews, as in the original.
+   - Run **every** advisor seat. A seat whose Stage 1 answer failed still reviews, as in the
+     original.
    - Start the five reviews in ONE message, then run the watch loop.
-5. **Aggregate:** `python3 "$H" aggregate $RUN`. If a line shows `PARSE WARNING`, show that
-   reviewer's raw ranking text.
+5. **Tally:** call `council_tally` `{ run, reviewers: { <seat>: <model it reviewed on>, … } }`. It
+   returns the street-cred table. For each entry in `parseWarnings`, show that reviewer's raw
+   ranking text.
 6. **Stage 3.**
-   - Run `python3 "$H" stage3-prompt $RUN`, then `next $RUN stage3 chairman`.
    - Run the chairman delegation under the watch loop.
-   - If its chain is exhausted, continue: the report records "Error: Unable to generate final
-     synthesis."
-7. **Report:** `python3 "$H" report $RUN`.
+   - If its chain is exhausted, continue: the report records that the chairman could not write
+     the verdict.
+7. **Report:** call `council_report` `{ run, chairman: <model>, cast, failovers: [...] }`.
 
 ## Presenting the result
 
@@ -200,7 +214,7 @@ Present the verdict in chat, scannable and in bullets:
 
 Then give:
 
-1. **Street cred:** the aggregate table (response, advisor, model, average rank, votes). Say that
+1. **Street cred:** the tally table (response, advisor, model, average rank, votes). Say that
    reviewers saw only anonymous labels.
 2. **Notes:**
    - the cast;
@@ -211,19 +225,18 @@ Then give:
 
 Do not smooth over disagreement.
 
-## Fidelity notes
+## Design notes
 
-**From Karpathy, unchanged:**
+**From Karpathy's design:**
 - parallel Stage 1;
 - anonymized Response labels;
 - every member also ranks its own answer;
-- the ranking prompt's text and the strict `FINAL RANKING:` format;
-- the chairman template's sentences;
+- a strict `FINAL RANKING:` format;
+- a chairman synthesis;
 - average-rank aggregation;
-- graceful degradation;
-- the original's title cleanup.
+- graceful degradation.
 
-**From Lehmann:**
+**From Lehmann's design:**
 - the five lenses and their tensions;
 - context framing, with one clarifying question at most;
 - the three review questions;
@@ -231,17 +244,15 @@ Do not smooth over disagreement.
 - the chairman may side with a dissenter;
 - "don't council trivial questions".
 
-**Deliberate changes:**
+**Our own choices:**
+- **Prompts:** the review, chairman and title prompts are written for this plugin.
 - **Casting:** models are cast per user from their delegation catalog, with exclusions and a saved
-  cast; Karpathy hard-codes OpenRouter ids.
-- **Stage 1 prompt:** the framed question plus the advisor's lens.
-- **Review prompt:** the three questions and a 400-word limit are added to Karpathy's text.
-- **Chairman prompt:** shows each answer's label, lens and model, plus the aggregate, and asks for
-  the verdict structure.
+  cast.
 - **Labels:** shuffled.
 - **Aggregation:** per advisor seat.
 - **Parser:** reads the **last** `FINAL RANKING`, case-insensitive, with word boundaries and
   deduplication.
-- **Privacy:** the label map and Stage 1 answers move outside the workspace during review.
-- **Failover:** immediate, along each seat's cast chain, with run-wide failure memory; the
-  original drops a failed model.
+- **Privacy:** during review the Stage 1 files are emptied and the label map stays with the
+  plugin. This is best effort: models may recognise their own writing, and a sub-agent that goes
+  looking could still read the plugin's data directory.
+- **Failover:** immediate, along each seat's cast chain, with run-wide failure memory.
