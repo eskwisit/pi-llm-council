@@ -1,69 +1,95 @@
 # LLM Council for PI-Desktop
 
-A port of [karpathy/llm-council](https://github.com/karpathy/llm-council). Instead of asking one
-model, the agent convenes a council of persona sub-agents. It runs in three stages:
+Ask one model and you get one answer, with no way to tell whether it is great or mediocre. The
+council runs your question through **five advisors**. Each thinks from a deliberately different
+angle on the model best suited to that angle. They review each other anonymously, and a chairman
+delivers a verdict: where they agree, where they clash, what they all missed, what to do, and the
+one thing to do first.
 
-1. **Stage 1, first opinions**: Opus, Sonnet and Gemini Flash answer the same question in
-   parallel.
-2. **Stage 2, review**: the answers are shuffled and anonymized as Response A/B/C. Each member
-   ranks them all in a fresh session, using a strict `FINAL RANKING:` format, and the ranks are
-   averaged into an aggregate "street cred" score.
-3. **Stage 3, final response**: the Chairman sees every answer and every review, and writes one
-   final answer.
+It combines two designs:
+
+- [karpathy/llm-council](https://github.com/karpathy/llm-council): several models answer, rank
+  each other's anonymized answers into a leaderboard, and a chairman synthesizes the result.
+- [Ole Lehmann's llm-council skill](https://github.com/aiwithremy/claude-skills-llm-council):
+  five thinking lenses that create tension, context framing, blind-spot reviews and a structured
+  verdict.
+
+## The council
+
+| Advisor | Model | Lens |
+|---|---|---|
+| The Contrarian | Opus | Assumes there is a fatal flaw and finds it |
+| The First Principles Thinker | Opus | What are we actually trying to solve? Reframes the question |
+| The Expansionist | Gemini Flash | The upside everyone is missing |
+| The Outsider | Gemini Flash | Fresh eyes, no context; catches the curse of knowledge |
+| The Executor | Sonnet | Can it be done, and what do you do Monday morning? |
+| Chairman | Opus | Synthesizes the answers and reviews into the verdict |
+| Clerk | Gemini Flash | Titles the run |
+
+The lenses create three tensions:
+- **Contrarian ↔ Expansionist:** downside against upside.
+- **First Principles ↔ Executor:** rethink it against just do it.
+- **The Outsider** keeps everyone honest.
+
+The model mix adds Karpathy's diversity: two vendors with different blind spots, reviewing each
+other.
+
+## How a session runs
+
+1. **Frame.** The orchestrator reads the relevant workspace context and writes one neutral,
+   specific question. If the question is too vague, it asks one clarifying question first.
+2. **Stage 1.** The five advisors answer in parallel, 150–300 words each, fully committed to their
+   angle.
+3. **Stage 2.** The answers are shuffled into Response A–E. Each advisor, in a fresh session,
+   evaluates them all and names the strongest, the biggest blind spot and what everyone missed. It
+   ends with Karpathy's strict `FINAL RANKING:`. The rankings are averaged into a "street cred"
+   table.
+4. **Stage 3.** The chairman sees every answer with its advisor and model, every review and the
+   table, and writes the verdict. The chairman may side with a dissenter.
+
+Each run is saved under `.llm-council/runs/<timestamp>/` in your workspace as `report.md` and
+`transcript.json`.
 
 ## What is in the box: an agent plus sub-agents, shipped as a plugin
 
 | Part | Where | Role |
 |---|---|---|
-| Orchestrator agent | `skills/llm-council.md`, a plugin skill | Turns the session agent into the council's orchestrator: runs the stages, keeps answers anonymous, handles failover, presents the result |
-| Persona sub-agents | `subagents/*.md`, installed to `~/.agents/subagents/` | `council-member-opus`, `council-member-sonnet`, `council-member-gemini`, `council-chairman`, `council-clerk`. Each pins its model, fallback chain, thinking level, Read/Write-only tools and watchdog timeouts |
-| Helper | `scripts/council.py` | Anonymization, ranking parser, aggregation, Karpathy's prompts (byte-identical), fallback bookkeeping, reports and persona installation |
+| Orchestrator agent | `skills/llm-council.md`, a plugin skill | Framing, stages, anonymity, failover, presentation |
+| Persona sub-agents | `subagents/*.md`, installed to `~/.agents/subagents/` | `council-contrarian`, `council-first-principles`, `council-expansionist`, `council-outsider`, `council-executor`, `council-chairman`, `council-clerk`. Each pins its lens, model chain, thinking level, Read/Write tools and timeouts |
+| Helper | `scripts/council.py` | Prompts, anonymization, ranking parser, per-advisor scoring, failover bookkeeping, reports, persona install |
 
-A PI-Desktop plugin can contribute skills but not sub-agents, and sub-agents can only be defined
-globally in `~/.agents/subagents/`. So the plugin ships the persona files, and the skill installs
-them (`council.py install-subagents`) on first use. Start a new session afterwards so PI-Desktop
-picks them up.
-
-The three member personas are **identical apart from their model**. That is faithful to the
-original, where every member gets the same prompt and the diversity comes from the models
-themselves.
+PI-Desktop plugins can contribute skills but not sub-agents, and sub-agents are global-only. So the
+plugin ships the persona files, and the skill installs them on first use with
+`council.py install-subagents`.
 
 ## Usage
 
 1. Install the `.piplug` from the plugins page, or load this folder for development.
-2. Run `python3 scripts/council.py install-subagents`, or let the skill do it, then start a new
-   session.
-3. Ask: "Ask the council: …"
+2. Run `python3 scripts/council.py install-subagents`, or let the skill do it. If the council
+   personas don't show up, start a new session.
+3. Say "council this: …", "pressure-test this", or bring a real decision.
 
-Each run is saved under `.llm-council/runs/<timestamp>/` in your workspace, as `report.md` and
-`transcript.json`.
+The council is for decisions with real stakes, not for lookups or writing tasks.
 
-## Casting and failover
+## Anonymity and failover
 
-| Seat | Sub-agent | Chain (best first) |
-|---|---|---|
-| Member | `council-member-opus` | Opus → Opus via 2nd account → Sonnet → Sonnet via 2nd account |
-| Member | `council-member-sonnet` | Sonnet → Sonnet via 2nd account → Opus → Opus via 2nd account |
-| Member | `council-member-gemini` | Gemini 3.8 Flash → Gemini 4 Argon → Gemini 3.5 Flash-Lite → Sonnet → Sonnet via 2nd account |
-| Chairman | `council-chairman` | Opus → Opus via 2nd account → Sonnet → Sonnet via 2nd account |
-| Clerk (title) | `council-clerk` | Gemini 3.8 Flash → Gemini 3.5 Flash-Lite → Haiku |
+**Anonymity.** While reviews run, the label map and the original answers sit in
+`~/.llm-council/private/`, outside every path a sub-agent can read. Reviewers only ever see
+Response A–E.
 
-Failover never retries a failed model and never leaves a seat dangling:
+**Failover.** No seat dangles and no failed model is retried. Failover has three layers:
+- **Native:** PI-Desktop switches a delegation to the persona's next model on a model error.
+- **Heartbeat:** a seat with no activity 45 s after launch is relaunched on the next model.
+- **Watchdog:** idle and maximum-duration limits catch a seat that stalls later.
 
-- **Native**: if a model call errors (503, overloaded, rate limit), the PI-Desktop runtime
-  switches the same delegation to the next model in the persona's `fallbackModels`, keeping its
-  context.
-- **Watchdog**: if a seat stalls past its idle timeout or maximum duration, or ends without
-  output, the orchestrator relaunches that persona on the model after the failed one.
-
-Every substitution is logged in `seats.json` and in the report, so you always know which model
-actually answered.
-
-The persona files are the single source of truth for models and chains; the helper reads its
-chains from them. To change the cast, edit `subagents/*.md`, then reinstall them.
+A model that fails anywhere in a run is skipped for every later seat. Every substitution is logged
+in the report, with the model that actually answered. The persona files are the single source of
+truth for models and chains (`python3 scripts/council.py chain <seat>`).
 
 ## Credits
 
-Based on [karpathy/llm-council](https://github.com/karpathy/llm-council). The Stage 2 ranking,
-Stage 3 Chairman and title prompts, and the ranking parser, are reproduced from its
-`backend/council.py`. That repository does not declare a license.
+Based on [karpathy/llm-council](https://github.com/karpathy/llm-council). The ranking, chairman and
+title prompts keep his text, with additions, and the ranking parser extends his. The advisor lenses,
+framing step, review questions and verdict structure are adapted from
+[Ole Lehmann's llm-council skill](https://github.com/aiwithremy/claude-skills-llm-council). Neither
+repository declares a license.
