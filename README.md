@@ -34,6 +34,14 @@ The lenses create three tensions:
 Casting different vendors adds Karpathy's model diversity, because different models have
 different blind spots.
 
+## Usage
+
+1. Install the `.piplug` from the plugins page, or load this folder for development. Use Agent
+   mode with a workspace folder open.
+2. Say "council this: …", "pressure-test this", or bring a real decision.
+
+The council is for decisions with real stakes, not for lookups or writing tasks.
+
 ## Your models, not ours
 
 Nothing in the plugin names a model. PI-Desktop gives every agent the list of models you can
@@ -44,19 +52,22 @@ delegate to (Anthropic, OpenAI, Google, xAI, OpenRouter, a local model, and so o
 2. It casts each seat by the strength the lens needs, plus 1–3 fallbacks, preferring vendor
    diversity.
 3. It shows you the cast to confirm.
-4. It saves the cast to `~/.llm-council/cast.json`.
+4. It saves the cast in the plugin's settings.
 
 Later runs reuse that cast until one of its models disappears from your list.
 
-**To rule out a model or provider,** for example a free tier that stalls under load:
+**To rule out a model or provider,** for example a free tier that stalls under load, tell the
+council ("don't use Gemini, it's free tier"). It records a glob such as `google/*` and your note.
+You can also edit them under **Plugins → LLM Council → Settings**:
 
-```bash
-python3 scripts/council.py config --exclude 'google/*' --note 'Gemini is free tier'
-```
+| Setting | Holds |
+|---|---|
+| Council cast | models per seat, `{ "contrarian": ["model", "fallback"], … }`; clear it to recast |
+| Excluded models | glob patterns the council never casts, e.g. `["google/*"]` |
+| Model notes | notes the council reads before casting |
 
-Exclusions live in `~/.llm-council/config.json`, and the cast is checked against them. With no
-delegation models configured, every seat uses the session model. The council still runs, but
-without model diversity.
+With no delegation models configured, every seat uses the session model. The council still runs,
+but without model diversity.
 
 ## How a session runs
 
@@ -66,57 +77,108 @@ without model diversity.
    angle.
 3. **Stage 2.** The answers are shuffled into Response A–E. Each advisor, in a fresh session,
    evaluates them all and names the strongest, the biggest blind spot and what everyone missed. It
-   ends with Karpathy's strict `FINAL RANKING:`. The rankings are averaged into a "street cred"
-   table.
+   ends with a strict `FINAL RANKING:`. The rankings are averaged into a "street cred" table.
 4. **Stage 3.** The chairman sees every answer with its advisor and model, every review and the
    table, and writes the verdict. The chairman may side with a dissenter.
 
 Each run is saved under `.llm-council/runs/<timestamp>/` in your workspace as `report.md` and
 `transcript.json`.
 
-## What is in the box: an agent plus sub-agents, shipped as a plugin
+**Failover.** No seat dangles and no failed model is retried. A seat that errors, shows no
+activity 45 s after launch, stalls past its idle or maximum time, or ends without output is
+stopped and relaunched on the next model in its cast chain: its primary model, the same model
+through your other accounts (added automatically), then the fallbacks you confirmed. A model that
+fails anywhere in a run is skipped for every later seat. Every substitution is logged in the
+report.
+
+## What is in the box
 
 | Part | Where | Role |
 |---|---|---|
-| Orchestrator agent | `skills/llm-council.md`, a plugin skill | Framing, stages, anonymity, failover, presentation |
+| Orchestrator | `skills/llm-council.md`, a plugin skill | Casting, framing, stages, failover, presentation |
 | Persona sub-agents | `subagents/*.md`, installed to `~/.agents/subagents/` | `council-contrarian`, `council-first-principles`, `council-expansionist`, `council-outsider`, `council-executor`, `council-chairman`, `council-clerk`. Each carries its lens, thinking level, Read/Write tools and timeouts. None names a model |
-| Helper | `scripts/council.py` | Catalog parsing, cast validation and reuse, exclusions, prompts, anonymization, ranking parser, per-advisor scoring, failover bookkeeping, reports, persona install |
+| Agent tools | `main.js` | `council_config` (cast, exclusions, notes), `council_anonymize` (shuffle and hide authorship), `council_tally` (rankings, street cred, chairman prompt), `council_report` (report and transcript) |
 
-PI-Desktop plugins can contribute skills but not sub-agents, and sub-agents are global-only. So the
-plugin ships the persona files, and the skill installs them on first use with
-`council.py install-subagents`.
+PI-Desktop plugins can contribute skills and agent tools but not sub-agents, which load only from
+`~/.agents/subagents/`. So the plugin copies its personas there when it loads and removes them when
+it unloads (a persona you edited is left alone).
 
-## Usage
+## Permissions
 
-1. Install the `.piplug` from the plugins page, or load this folder for development.
-2. Run `python3 scripts/council.py install-subagents`, or let the skill do it. If the council
-   personas don't show up, start a new session.
-3. Say "council this: …", "pressure-test this", or bring a real decision.
+| Permission | Why |
+|---|---|
+| `agent.prompt.inject` | indexes the LLM Council skill so the agent can load it |
+| `agent.tool.register` | the four `council_*` tools the agent calls during a run |
+| `fs.read`, `fs.write` | reading and writing the run files, limited to `.llm-council/**` in the workspace |
 
-The council is for decisions with real stakes, not for lookups or writing tasks.
+`agent.prompt.inject`, `agent.tool.register` and `fs.write` are high-risk permissions. The plugin
+has no network access and runs no programs.
 
-## Anonymity and failover
+### What it can and cannot do
 
-**Anonymity.** While reviews run, the label map and the original answers sit in
-`~/.llm-council/private/`, outside every path a sub-agent can read. Reviewers only ever see
-Response A–E.
+It **can**:
 
-**Failover.** No seat dangles and no failed model is retried. A seat that errors, shows no
-activity 45 s after launch, stalls past its idle or maximum time, or ends without output is
-stopped. It is then relaunched on the next model in its cast chain.
+- read and write files under `.llm-council/` in your workspace, where each run keeps its question,
+  answers, reviews, prompts and report. During review it empties the Stage 1 answer files so
+  reviewers cannot tell who wrote which
+- copy its seven `council-*.md` personas to `~/.agents/subagents/` on load, and remove them on
+  unload unless you edited them
+- keep each run's label map and Stage 1 answers in its private data directory
+  (`~/.pi-desktop/plugins/data/eskwisit.llm-council/runs/`), deleted after 30 days
+- keep the cast, exclusions and notes in its plugin settings
 
-The chain for each seat is:
-1. its primary model;
-2. the same model through your other accounts, which the helper adds automatically;
-3. the fallbacks you confirmed.
+It **cannot** and does not:
 
-A model that fails anywhere in a run is skipped for every later seat. Every substitution is
-logged in the report.
+- access the network, so nothing leaves your computer except through the models you cast
+- run programs or shell commands, or load code
+- read or write workspace files outside `.llm-council/`
+- touch any file in `~/.agents/subagents/` other than its own seven `council-*.md` personas (and
+  obsolete council personas it shipped before, recognised by their "Use only from the llm-council
+  skill." marker)
+
+Details for reviewers are in [docs/security-review.md](docs/security-review.md).
+
+## Known limits
+
+- **Agent mode only.** PI-Desktop hides plugin tools and delegation in Plan and Goal mode.
+- **A workspace folder must be open.** The run files live in it, and the plugin's file access is
+  limited to `.llm-council/` there.
+- **Anonymity is best effort.** Reviewers see only Response A–E, and the files that would tell them
+  who wrote what are emptied during review. Models may still recognise their own writing, and a
+  sub-agent that goes looking could read the plugin's data directory, which PI-Desktop does not
+  hide from agents.
+- **Sub-agent slots.** PI-Desktop loads at most 16 sub-agent definitions; the council uses 7. If
+  the personas don't show up after installing, start a new session.
+- **Timeouts are watched by the orchestrator.** The personas' idle and maximum durations are
+  enforced by the skill's watch loop, not by PI-Desktop.
+- Tested on macOS. Nothing is platform-specific, but Windows and Linux have not been tried.
+
+## Development
+
+The plugin has no build step and no dependencies. Run the tests with Node 20 or later:
+
+```bash
+node --test tests/
+```
+
+The tests load `main.js` with a fake PI-Desktop host in a temporary folder and cover the ranking
+parser, aggregation, prompts, casting and exclusions, the full anonymize → tally → report flow,
+state surviving a restart, persona install and removal, and the manifest matching the registered
+tools.
 
 ## Credits
 
-Based on [karpathy/llm-council](https://github.com/karpathy/llm-council). The ranking, chairman and
-title prompts keep his text, with additions, and the ranking parser extends his. The advisor lenses,
-framing step, review questions and verdict structure are adapted from
-[Ole Lehmann's llm-council skill](https://github.com/aiwithremy/claude-skills-llm-council). Neither
-repository declares a license.
+The council's design follows [karpathy/llm-council](https://github.com/karpathy/llm-council) (an
+anonymous peer ranking and a chairman synthesis) and
+[Ole Lehmann's llm-council skill](https://github.com/aiwithremy/claude-skills-llm-council) (the
+five advisor lenses, the framing step, the review questions and the verdict structure). The
+review, chairman and title prompts and the code are written for this plugin, and the advisor
+personas adapt Lehmann's lenses. Neither repository declares a license.
+
+## License
+
+[Apache-2.0](LICENSE)
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
