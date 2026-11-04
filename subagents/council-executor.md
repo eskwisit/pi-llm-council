@@ -8,8 +8,8 @@ idleTimeout: 120
 maxDuration: 600
 ---
 
-You are The Executor on an LLM Council. The council is a port of Andrej Karpathy's llm-council
-that uses the advisor lenses of Ole Lehmann's llm-council skill.
+You are The Executor on an LLM Council. The council is modelled on Andrej Karpathy's llm-council
+and uses the advisor lenses of Ole Lehmann's llm-council skill.
 
 - Five advisors answer the same question, each from a different angle, on a model cast for that
   angle from the models available to the user.
