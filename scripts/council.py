@@ -17,9 +17,12 @@ Run directory layout:
   transcript.json, report.md  full record                  (report)
 
 Usage:
+  council.py install-subagents [--check]   copy subagents/*.md to ~/.agents/subagents
+  council.py agent         SEAT            -> sub-agent (persona) name for the seat
   council.py next          RUN_DIR STAGE SEAT [--failed MODEL] [--reason TEXT]
                            -> prints the model to (re)launch the seat on; exit 3 = exhausted
   council.py chain         SEAT
+  council.py record        RUN_DIR STAGE SEAT MODEL   model that actually answered
   council.py stage2-prompt RUN_DIR [--seed N] [--no-shuffle]
   council.py aggregate     RUN_DIR
   council.py stage3-prompt RUN_DIR
@@ -37,31 +40,59 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-# Council casting (PI-Desktop delegation model ids). Seat id -> primary model.
-MEMBERS = {
-    "opus": "anthropic/claude-opus-5-5",
-    "sonnet": "anthropic/claude-sonnet-5-5",
-    "gemini-flash": "google/gemini-3.8-flash",
+# Seats are played by persona sub-agents defined in ../subagents/*.md (installed
+# to ~/.agents/subagents). Those files are the single source of truth for each
+# seat's model and best-first fallback chain (`model` + `fallbackModels`); the
+# PI-Desktop runtime fails over along the same chain natively on model errors.
+SUBAGENT_DIR = Path(__file__).resolve().parent.parent / "subagents"
+INSTALL_DIR = Path.home() / ".agents" / "subagents"
+SEAT_AGENT = {
+    "opus": "council-member-opus",
+    "sonnet": "council-member-sonnet",
+    "gemini-flash": "council-member-gemini",
+    "chairman": "council-chairman",
+    "clerk": "council-clerk",
 }
-CHAIRMAN = "anthropic/claude-opus-5-5"
-CLERK = "google/gemini-3.8-flash"
 
-# Fallback chains, best first. First choice for a failing seat is the SAME model
-# through the second Anthropic account (identical quality, independent quota);
-# then the closest model that preserves the seat's purpose. The Gemini seat stays
-# on Google as long as possible because its job is vendor diversity.
-ALT = "8a8a7980-6e22-405e-81a1-2abed7a2c5b0"
-OPUS, OPUS_ALT = "anthropic/claude-opus-5-5", f"{ALT}/claude-opus-5-5"
-SONNET, SONNET_ALT = "anthropic/claude-sonnet-5-5", f"{ALT}/claude-sonnet-5-5"
-FALLBACKS = {
-    "opus": [OPUS, OPUS_ALT, SONNET, SONNET_ALT],
-    "sonnet": [SONNET, SONNET_ALT, OPUS, OPUS_ALT],
-    "gemini-flash": ["google/gemini-3.8-flash", "google/gemini-4-argon",
-                     "google/gemini-3.5-flash-lite", SONNET, SONNET_ALT],
-    "chairman": [OPUS, OPUS_ALT, SONNET, SONNET_ALT],
-    "clerk": ["google/gemini-3.8-flash", "google/gemini-3.5-flash-lite",
-              "anthropic/claude-haiku-5-5"],
-}
+
+def _frontmatter(path):
+    lines = path.read_text(encoding="utf-8").replace("\r\n", "\n").split("\n")
+    if not lines or lines[0] != "---":
+        return {}
+    out, key = {}, None
+    for line in lines[1:]:
+        if line == "---":
+            break
+        item = re.match(r"^[ \t]*-[ \t]+(.*)$", line)
+        if item and key:
+            out.setdefault(key, [])
+            out[key].append(item.group(1).strip())
+            continue
+        pair = re.match(r"^([A-Za-z][A-Za-z0-9_\- ]*):[ \t]*(.*)$", line)
+        if pair:
+            key = pair.group(1).strip().lower()
+            out[key] = pair.group(2).strip() or []
+    return out
+
+
+def _load_chains():
+    chains = {}
+    for seat, agent in SEAT_AGENT.items():
+        f = SUBAGENT_DIR / f"{agent}.md"
+        if not f.is_file():
+            sys.exit(f"error: missing persona {f}")
+        fm = _frontmatter(f)
+        fb = fm.get("fallbackmodels", [])
+        chains[seat] = [fm["model"]] + (fb if isinstance(fb, list) else
+                                        [x.strip() for x in fb.strip("[]").split(",") if x.strip()])
+    return chains
+
+
+FALLBACKS = _load_chains()
+MEMBERS = {seat: FALLBACKS[seat][0] for seat in ("opus", "sonnet", "gemini-flash")}
+CHAIRMAN = FALLBACKS["chairman"][0]
+CLERK = FALLBACKS["clerk"][0]
+OPUS, OPUS_ALT, SONNET, SONNET_ALT = FALLBACKS["opus"][:4]
 STAGES = {"stage1", "stage2", "stage3", "title"}
 STAGE_FILE = {"stage1": "stage1/{seat}.md", "stage2": "stage2/{seat}.md",
               "stage3": "stage3/chairman.md", "title": "title.txt"}
@@ -203,7 +234,11 @@ def cmd_next(run, stage, seat, failed=None, reason=None):
         stale = run / STAGE_FILE[stage].format(seat=seat)
         if stale.exists():
             stale.unlink()  # never keep partial output from a failed model
-    nxt = next((m for m in FALLBACKS[seat] if m not in tried), None)
+    chain = FALLBACKS[seat]
+    # Continue AFTER the failed model: the runtime may already have burned the
+    # earlier links natively before the delegation as a whole failed.
+    after = chain[chain.index(failed) + 1:] if failed in chain else chain
+    nxt = next((m for m in after if m not in tried), None)
     if failed:
         seats["events"].append({
             "stage": stage, "seat": seat, "failed_model": failed,
@@ -218,6 +253,46 @@ def cmd_next(run, stage, seat, failed=None, reason=None):
         print("EXHAUSTED")
         sys.exit(3)
     print(nxt)
+
+
+def cmd_record(run, stage, seat, model):
+    """Record the model that actually produced a seat's output (native failover)."""
+    import datetime
+    if stage not in STAGES or seat not in FALLBACKS:
+        sys.exit(f"error: bad stage/seat {stage}/{seat}")
+    seats = _seats(run)
+    assigned = seats.get(stage, {}).get(seat)
+    if assigned and assigned != model:
+        seats["events"].append({
+            "stage": stage, "seat": seat, "failed_model": assigned,
+            "reason": "native failover", "next_model": model,
+            "at": datetime.datetime.now().isoformat(timespec="seconds")})
+    seats.setdefault(stage, {})[seat] = model
+    (run / "seats.json").write_text(json.dumps(seats, indent=2))
+    print(f"{stage}/{seat}: {model}")
+
+
+def cmd_install_subagents(check=False):
+    """Copy the persona definitions to ~/.agents/subagents (global-only in PI-Desktop)."""
+    stale = []
+    for agent in SEAT_AGENT.values():
+        src = SUBAGENT_DIR / f"{agent}.md"
+        dst = INSTALL_DIR / f"{agent}.md"
+        if not dst.is_file() or dst.read_bytes() != src.read_bytes():
+            stale.append((src, dst))
+    if check:
+        for _, dst in stale:
+            print(f"missing or outdated: {dst}")
+        if stale:
+            sys.exit(1)
+        print("council personas installed and up to date")
+        return
+    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    for src, dst in stale:
+        dst.write_bytes(src.read_bytes())
+        print(f"installed {dst}")
+    print("up to date" if not stale else
+          "start a new session so PI-Desktop loads the new sub-agents")
 
 
 def _read_dir(run, sub):
@@ -358,6 +433,15 @@ def cmd_selftest():
         with contextlib.redirect_stdout(out):
             cmd_next(run, "stage1", "opus", failed=OPUS, reason="503")
         assert out.getvalue().strip() == OPUS_ALT
+        with contextlib.redirect_stdout(io.StringIO()):   # native failover is recorded
+            cmd_record(run, "stage2", "gemini-flash", "google/gemini-4-argon")
+            cmd_next(run, "stage2", "gemini-flash")      # assignment only, no event
+            cmd_record(run, "stage2", "gemini-flash", "google/gemini-3.5-flash-lite")
+        assert _model_of("gemini-flash", run, "stage2") == "google/gemini-3.5-flash-lite"
+        out = io.StringIO()                               # watchdog: continue after it
+        with contextlib.redirect_stdout(out):
+            cmd_next(run, "stage2", "gemini-flash", failed="google/gemini-3.5-flash-lite")
+        assert out.getvalue().strip() == SONNET, out.getvalue()
         assert not (run / "stage1" / "opus.md").exists()   # partial output discarded
         assert _model_of("opus", run, "stage1") == OPUS_ALT
         for m in [OPUS_ALT, SONNET]:
@@ -370,6 +454,9 @@ def cmd_selftest():
             raise AssertionError("expected exhaustion")
         except SystemExit as e:
             assert e.code == 3
+    bodies = {(SUBAGENT_DIR / f"{SEAT_AGENT[s]}.md").read_text().split("\n---\n", 1)[1]
+              for s in ("opus", "sonnet", "gemini-flash")}
+    assert len(bodies) == 1, "member personas must be identical apart from the model"
     print("selftest OK")
 
 
@@ -379,6 +466,12 @@ def main(argv):
     cmd = argv[1]
     if cmd == "selftest":
         return cmd_selftest()
+    if cmd == "install-subagents":
+        return cmd_install_subagents("--check" in argv[2:])
+    if cmd == "agent":
+        if len(argv) < 3 or argv[2] not in SEAT_AGENT:
+            sys.exit(f"seats: {', '.join(SEAT_AGENT)}")
+        return print(SEAT_AGENT[argv[2]])
     if cmd == "chain":
         if len(argv) < 3 or argv[2] not in FALLBACKS:
             sys.exit(f"seats: {', '.join(FALLBACKS)}")
@@ -395,6 +488,10 @@ def main(argv):
         if len(opts) < 2:
             sys.exit(__doc__)
         cmd_next(run, opts[0], opts[1], opt("--failed"), opt("--reason"))
+    elif cmd == "record":
+        if len(opts) < 3:
+            sys.exit(__doc__)
+        cmd_record(run, opts[0], opts[1], opts[2])
     elif cmd == "stage2-prompt":
         seed = opt("--seed")
         cmd_stage2_prompt(run, int(seed) if seed else None, "--no-shuffle" not in opts)
