@@ -2,7 +2,7 @@
 	"schemaVersion": 1,
 	"id": "eskwisit.llm-council",
 	"name": "LLM Council",
-	"version": "0.0.1",
+	"version": "0.14.0",
 	"description": "A council of five advisors (Contrarian, First Principles, Expansionist, Outsider, Executor), cast from your own models, answers your question, reviews the answers anonymously, and a chairman delivers the verdict.",
 	"author": "eskwisit",
 	"license": "Apache-2.0",
@@ -23,7 +23,7 @@
 		}
 	},
 	"safetyNotes": "Agent tools plus a skill; no network access and no process execution. agent.prompt.inject indexes the LLM Council skill for the Skill tool. agent.tool.register adds four tools the agent calls during a council run (council_config, council_anonymize, council_tally, council_report); fs.read and fs.write are scoped to .llm-council/** in the workspace, where each run keeps its files. Beyond the host file API the plugin uses Node fs for two things: on load it copies its seven council-*.md persona sub-agents to ~/.agents/subagents (the only place PI-Desktop loads sub-agents from) and removes them on unload unless you edited them; during a run it keeps the label map and the hidden Stage 1 answers in its private data directory, pruned after 30 days. The saved cast, model exclusions and notes are plugin settings. Anonymity is best effort: a sub-agent that goes looking could still read the plugin data directory.",
-	"changelog": "First release: five advisors answer your question, review each other anonymously, and a chairman delivers the verdict.",
+	"changelog": "First release: five advisors cast from your own models answer your question, review each other anonymously, and a chairman delivers the verdict.",
 	"contributes": {
 		"skills": ["skills/llm-council.md"],
 		"agentTools": [
