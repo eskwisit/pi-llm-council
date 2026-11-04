@@ -1,11 +1,7 @@
 ---
 name: council-clerk
-description: LLM Council clerk (Gemini Flash). Writes the short run title. Use only from the llm-council skill.
+description: LLM Council clerk. Writes the short run title. Use only from the llm-council skill.
 tools: [Write]
-model: google/gemini-3.8-flash
-fallbackModels:
-  - google/gemini-3.5-flash-lite
-  - anthropic/claude-haiku-5-5
 thinkingLevel: low
 permission: accept-edits
 idleTimeout: 60

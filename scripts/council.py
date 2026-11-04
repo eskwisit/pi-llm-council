@@ -19,18 +19,31 @@ Run directory, inside the workspace (sub-agents can read it):
   transcript.json, report.md                                       (report)
 
 Private directory, ~/.llm-council/private/<run>-<hash>/. It lies outside every
-path a sub-agent can read and holds seats.json (assignments and failover events),
+path a sub-agent can read and holds models.json (this run's model catalog),
+cast.json (model chain per seat), seats.json (assignments and failover events),
 label_map.json (the secret de-anonymization map) and the anonymized Stage 1
 answers.
 
+No model is hard-coded. Each run reads the user's own delegation catalog (the
+"Available models for delegation" list PI-Desktop gives every agent). The
+orchestrator casts models to seats from that list, and the helper validates the
+cast, applies the user's exclusions and builds each seat's fallback chain.
+
+User files in ~/.llm-council/:
+  config.json   exclusions (glob patterns on model ids) and notes, e.g. free tier
+  cast.json     the last confirmed cast, reused while its models stay available
+
 Usage:
   council.py install-subagents [--check]
-  council.py seats                         advisor seats, in order
+  council.py seats [--all]                 advisor seats (--all: plus chairman, clerk)
   council.py agent  SEAT                   persona sub-agent for a seat
-  council.py chain  SEAT                   best-first model chain for a seat
+  council.py config [--exclude PATTERN --note TEXT | --include PATTERN | --clear]
+  council.py models RUN < catalog          save this run's catalog (from stdin)
+  council.py cast   RUN --reuse            reuse the saved cast if still valid (exit 4 = recast)
+  council.py cast   RUN < cast.json        validate and save {"seat": ["model", ...], ...}
+  council.py chain  RUN SEAT               the seat's model chain for this run
   council.py next   RUN STAGE SEAT [--failed MODEL] [--reason TEXT]
                     prints the model to (re)launch the seat on; exit 3 = exhausted
-  council.py record RUN STAGE SEAT (--delegation ID | --model MODEL)
   council.py title-prompt  RUN
   council.py stage2-prompt RUN [--seed N] [--no-shuffle] [--force]
   council.py aggregate     RUN
@@ -45,6 +58,7 @@ stage2), chairman (stage3) or clerk (title).
 import contextlib
 import datetime
 import fcntl
+import fnmatch
 import hashlib
 import json
 import random
@@ -52,13 +66,12 @@ import re
 import shutil
 import sys
 from collections import defaultdict
-from functools import lru_cache
 from pathlib import Path
 
 SUBAGENT_DIR = Path(__file__).resolve().parent.parent / "subagents"
 INSTALL_DIR = Path.home() / ".agents" / "subagents"
 PRIVATE_ROOT = Path.home() / ".llm-council" / "private"
-SESSIONS_DIR = Path.home() / ".pi-desktop" / "sessions"
+CONFIG_DIR = Path.home() / ".llm-council"
 MARKER = "Use only from the llm-council skill."
 
 # Advisor seat -> (persona sub-agent, display name). Order = Stage 1 order.
@@ -119,18 +132,176 @@ def _as_list(v):
     return [_unquote(x) for x in v.strip("[]").split(",") if x.strip()] if v else []
 
 
-@lru_cache(maxsize=None)
-def chains():
-    out = {}
-    for seat, agent in SEAT_AGENT.items():
-        f = SUBAGENT_DIR / f"{agent}.md"
-        if not f.is_file():
-            sys.exit(f"error: missing persona {f}")
-        fm, _ = _frontmatter(f)
-        if not fm.get("model"):
-            sys.exit(f"error: {f} has no model")
-        out[seat] = [fm["model"]] + _as_list(fm.get("fallbackmodels", []))
+# --------------------------------------------------------------------------
+# Models: catalog -> user config -> cast -> per-seat chains
+# --------------------------------------------------------------------------
+
+_CATALOG_LINE = re.compile(
+    r"^\s*[-*]?\s*`?([A-Za-z0-9][\w.\-]*/[\w.:\-]+)`?\s*(?:[\u2014\u2013-]+\s*(.*))?$")
+
+
+def parse_catalog(text):
+    """Parse PI-Desktop's "Available models for delegation" list.
+
+    Lines look like: - `provider/model` — Account name, reasoning, thinking: low/high
+    """
+    out, seen = [], set()
+    for line in text.splitlines():
+        m = _CATALOG_LINE.match(line)
+        if not m or m.group(1) in seen:
+            continue
+        mid, rest = m.group(1), (m.group(2) or "").strip()
+        provider, model = mid.split("/", 1)
+        parts = [x.strip() for x in rest.split(",")]
+        think = re.search(r"thinking:\s*([\w/]+)", rest)
+        out.append({"id": mid, "provider": provider, "model": model,
+                    "account": parts[0] if parts and parts[0] else provider,
+                    "reasoning": bool(re.search(r"\breasoning\b", rest)),
+                    "thinking": [] if not think or think.group(1) == "none"
+                    else think.group(1).split("/")})
+        seen.add(mid)
     return out
+
+
+def load_config():
+    p = CONFIG_DIR / "config.json"
+    cfg = json.loads(p.read_text()) if p.is_file() else {}
+    cfg.setdefault("exclude", [])
+    cfg.setdefault("notes", [])
+    return cfg
+
+
+def save_config(cfg):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    (CONFIG_DIR / "config.json").write_text(json.dumps(cfg, indent=2))
+
+
+def excluded(model_id, cfg=None):
+    cfg = cfg or load_config()
+    return any(fnmatch.fnmatch(model_id.lower(), pat.lower()) for pat in cfg["exclude"])
+
+
+def _family(model_name):
+    return re.split(r"[-_.:]", model_name.lower(), 1)[0]
+
+
+def _catalog(run):
+    p = private_dir(run) / "models.json"
+    if not p.is_file():
+        sys.exit("error: run `models RUN` first (pipe in the delegation model list)")
+    return json.loads(p.read_text())
+
+
+def usable_models(run):
+    cfg = load_config()
+    return [m for m in _catalog(run) if not excluded(m["id"], cfg)]
+
+
+def build_cast(requested, catalog, cfg):
+    """Validate a requested cast; return (seat -> chain, warnings) or exit."""
+    by_id = {m["id"]: m for m in catalog}
+    usable = [m for m in catalog if not excluded(m["id"], cfg)]
+    errors, warnings, cast = [], [], {}
+    for seat in SEAT_AGENT:
+        req = requested.get(seat)
+        if isinstance(req, str):
+            req = [req]
+        if not req:
+            errors.append(f"{seat}: no model given")
+            continue
+        chain = []
+        for mid in req:
+            if mid not in by_id:
+                errors.append(f"{seat}: {mid} is not in the delegation catalog")
+            elif excluded(mid, cfg):
+                errors.append(f"{seat}: {mid} is excluded by ~/.llm-council/config.json")
+            if mid in by_id and not excluded(mid, cfg):
+                # the same model through another account comes right after it
+                for alt in [mid] + [m["id"] for m in usable
+                                    if m["model"] == by_id[mid]["model"] and m["id"] != mid]:
+                    if alt not in chain:
+                        chain.append(alt)
+        cast[seat] = chain
+    if errors:
+        print("error: invalid cast\n  " + "\n  ".join(errors), file=sys.stderr)
+        sys.exit(2)
+    used = {_family(by_id[cast[s][0]]["model"]) for s in ADVISORS}
+    avail = {_family(m["model"]) for m in usable}
+    if len(used) == 1 and len(avail) > 1:
+        warnings.append(f"all advisors are on one model family ({used.pop()}) although "
+                        f"{', '.join(sorted(avail))} are available: the review loses vendor diversity")
+    for seat, chain in cast.items():
+        if len(chain) == 1 and seat != "clerk":
+            warnings.append(f"{seat} has no fallback model")
+    return cast, warnings
+
+
+def _write_cast(run, cast, source):
+    (private_dir(run) / "cast.json").write_text(json.dumps(
+        {"seats": cast, "source": source, "at": _now()}, indent=2))
+
+
+def _print_cast(cast, warnings=()):
+    for seat, chain in cast.items():
+        print(f"{seat:>16}: {' -> '.join(chain)}")
+    for w in warnings:
+        print(f"warning: {w}")
+
+
+def cmd_models(run, text):
+    catalog = parse_catalog(text)
+    (private_dir(run) / "models.json").write_text(json.dumps(catalog, indent=2))
+    cfg = load_config()
+    if not catalog:
+        print("no delegation models configured: every seat inherits the session model "
+              "(no model diversity). Cast every seat with the model id \"inherit\".")
+    for m in catalog:
+        flag = "  [excluded]" if excluded(m["id"], cfg) else ""
+        print(f"{m['id']}  ({m['account']}, {'reasoning' if m['reasoning'] else 'standard'}, "
+              f"thinking: {'/'.join(m['thinking']) or 'none'}){flag}")
+    for note in cfg["notes"]:
+        print(f"note: {note}")
+
+
+def cmd_cast(run, reuse=False, text=None):
+    catalog = _catalog(run)
+    if not catalog:  # no overrides configured: everything inherits the session model
+        catalog = [{"id": "inherit", "provider": "inherit", "model": "inherit",
+                    "account": "session", "reasoning": False, "thinking": []}]
+    cfg = load_config()
+    saved = CONFIG_DIR / "cast.json"
+    if reuse:
+        if not saved.is_file():
+            print("no saved cast")
+            sys.exit(4)
+        prior = json.loads(saved.read_text())["seats"]
+        ids = {m["id"] for m in catalog}
+        trimmed = {s: [m for m in chain if m in ids and not excluded(m, cfg)]
+                   for s, chain in prior.items()}
+        stale = [s for s in SEAT_AGENT if not trimmed.get(s) or prior[s][0] != trimmed[s][0]]
+        if stale:
+            print(f"saved cast is stale for: {', '.join(stale)} (model gone or excluded)")
+            sys.exit(4)
+        cast, warnings = build_cast(trimmed, catalog, cfg)
+        _write_cast(run, cast, "reused")
+        _print_cast(cast, warnings)
+        return
+    try:
+        requested = json.loads(text)
+    except ValueError as e:
+        sys.exit(f"error: cast must be JSON: {e}")
+    cast, warnings = build_cast(requested, catalog, cfg)
+    _write_cast(run, cast, "new")
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    saved.write_text(json.dumps({"seats": cast, "at": _now()}, indent=2))
+    _print_cast(cast, warnings)
+
+
+def chains(run):
+    p = private_dir(run) / "cast.json"
+    if not p.is_file():
+        sys.exit("error: no cast for this run; run `cast RUN` first")
+    return json.loads(p.read_text())["seats"]
 
 
 def _resolve(model, chain, prefer=None):
@@ -142,6 +313,22 @@ def _resolve(model, chain, prefer=None):
     if prefer in hits:
         return prefer
     return hits[0] if hits else None
+
+
+def cmd_config(args):
+    cfg = load_config()
+    if "--clear" in args:
+        cfg = {"exclude": [], "notes": []}
+    for flag, key in (("--exclude", "exclude"), ("--note", "notes")):
+        for i, a in enumerate(args):
+            if a == flag and i + 1 < len(args) and args[i + 1] not in cfg[key]:
+                cfg[key].append(args[i + 1])
+    for i, a in enumerate(args):
+        if a == "--include" and i + 1 < len(args):
+            cfg["exclude"] = [x for x in cfg["exclude"] if x != args[i + 1]]
+    if args:
+        save_config(cfg)
+    print(json.dumps(cfg, indent=2))
 
 
 # --------------------------------------------------------------------------
@@ -339,7 +526,7 @@ def _seats(run):
 
 def _model_of(run, stage, seat):
     used = _seats(run).get(stage, {}).get(seat)
-    return used or chains()[seat][0]
+    return used or chains(run)[seat][0]
 
 
 def _check_seat(stage, seat):
@@ -354,7 +541,7 @@ def _now():
 def cmd_next(run, stage, seat, failed=None, reason=None):
     """Assign a seat to the best model that has not failed anywhere in this run."""
     _check_seat(stage, seat)
-    chain = chains()[seat]
+    chain = chains(run)[seat]
     with _locked_seats(run) as seats:
         assigned = seats.get(stage, {}).get(seat)
         start = 0
@@ -383,53 +570,6 @@ def cmd_next(run, stage, seat, failed=None, reason=None):
         print("EXHAUSTED")
         sys.exit(3)
     print(nxt)
-
-
-def delegation_model(delegation_id):
-    """modelId the PI-Desktop runtime reports for a settled delegation."""
-    files = sorted(SESSIONS_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for f in files:
-        found = None
-        with open(f, encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
-                if delegation_id not in line:
-                    continue
-                for m in re.finditer(r'\{[^{}]*"delegationId":\s*"' + re.escape(delegation_id)
-                                     + r'"[^{}]*\}', line):
-                    try:
-                        obj = json.loads(m.group(0))
-                    except ValueError:
-                        continue
-                    if obj.get("modelId") and obj.get("completedAt"):
-                        found = obj["modelId"]
-        if found:
-            return found
-    return None
-
-
-def cmd_record(run, stage, seat, model=None, delegation=None):
-    """Record the model that actually produced a seat's output.
-
-    Models skipped by a native failover (between the assigned model and the one
-    that answered) are logged as failed, so later stages skip them too.
-    """
-    _check_seat(stage, seat)
-    chain = chains()[seat]
-    if delegation:
-        model = delegation_model(delegation)
-        if not model:
-            sys.exit(f"error: no settled delegation {delegation} found in {SESSIONS_DIR}; "
-                     "pass --model instead")
-    with _locked_seats(run) as seats:
-        assigned = seats.get(stage, {}).get(seat) or chain[0]
-        used = _resolve(model, chain, prefer=assigned) or model
-        if used in chain and assigned in chain and chain.index(used) > chain.index(assigned):
-            for skipped in chain[chain.index(assigned):chain.index(used)]:
-                seats["events"].append({"stage": stage, "seat": seat, "failed_model": skipped,
-                                        "reason": "native failover", "next_model": used,
-                                        "at": _now()})
-        seats.setdefault(stage, {})[seat] = used
-    print(f"{stage}/{seat}: {used}")
 
 
 def _read_dir(d):
@@ -549,7 +689,7 @@ def cmd_report(run):
     stage1 = _stage1_labeled(run) if has_map else []
     stage2 = _stage2(run) if has_map else []
     agg = calculate_aggregate_rankings(stage2, lm) if has_map else []
-    chairman = seats.get("stage3", {}).get("chairman", chains()["chairman"][0])
+    chairman = seats.get("stage3", {}).get("chairman") or "(not cast)"
     final = run / "stage3" / "chairman.md"
     text = final.read_text(encoding="utf-8").strip() if final.is_file() else ""
     if not stage1:
@@ -620,7 +760,21 @@ def cmd_install_subagents(check=False):
 def cmd_selftest():
     import io
     import tempfile
-    global PRIVATE_ROOT
+    global PRIVATE_ROOT, CONFIG_DIR
+
+    def out(f, *a, **k):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            f(*a, **k)
+        return buf.getvalue().strip()
+
+    def exits(code, f, *a, **k):
+        try:
+            out(f, *a, **k)
+        except SystemExit as e:
+            assert e.code == code, (f.__name__, e.code)
+            return
+        raise AssertionError(f"{f.__name__} should exit {code}")
 
     # Parser: the original behaviour, plus the documented fixes.
     p = parse_ranking_from_text
@@ -643,16 +797,18 @@ def cmd_selftest():
     assert [(a["seat"], a["average_rank"], a["rankings_count"]) for a in agg] == \
         [("first-principles", 1.33, 3), ("contrarian", 1.67, 3)], agg
 
-    # Personas: complete, no duplicate keys, unique chains, identical shared sections.
+    # Personas: complete, no pinned model, no model names, identical shared sections.
     shared = set()
     for seat, agent in SEAT_AGENT.items():
         fm, dups = _frontmatter(SUBAGENT_DIR / f"{agent}.md")
         assert not dups, (agent, dups)
-        for k in ("name", "description", "tools", "model", "fallbackmodels", "thinkinglevel",
-                  "permission", "idletimeout", "maxduration"):
+        for k in ("name", "description", "tools", "thinkinglevel", "permission",
+                  "idletimeout", "maxduration"):
             assert fm.get(k), (agent, k)
+        assert "model" not in fm and "fallbackmodels" not in fm, (agent, "pins a model")
+        assert not re.search(r"\b(Opus|Sonnet|Haiku|Gemini|GPT|Grok|Llama|Mistral)\b",
+                             fm["description"]), (agent, "names a model")
         assert fm["name"] == agent and MARKER in fm["description"], agent
-        assert len(set(chains()[seat])) == len(chains()[seat]), (agent, "duplicate chain entry")
         if seat in ADVISORS:
             body = (SUBAGENT_DIR / f"{agent}.md").read_text()
             shared.add(body[body.index("## Stage 2: review"):])
@@ -663,44 +819,69 @@ def cmd_selftest():
     assert "Each line should be: number, period, space, then ONLY the response label" in rp
     assert clean_title('"' + "x" * 60 + '"') == "x" * 47 + "..." and clean_title("") == "New Conversation"
 
-    # Failover bookkeeping in a throwaway run.
+    catalog_text = """Available models for delegation (pass as `model` parameter on Task):
+
+- `anthropic/big-1` \u2014 Anthropic (Pro), reasoning, thinking: low/high
+- `anthropic/mid-1` \u2014 Anthropic (Pro), reasoning, thinking: low/high
+- `work/big-1` \u2014 Anthropic (Work), reasoning, thinking: low/high
+- `xai/grok-x` \u2014 xAI, reasoning, thinking: none
+- `google/free-1` \u2014 Google Gemini, standard, thinking: none
+- `openrouter/fast-1` \u2014 OpenRouter, standard, thinking: none
+
+Pick cheaper/faster models for simple searches."""
+    cat = parse_catalog(catalog_text)
+    assert [m["id"] for m in cat] == ["anthropic/big-1", "anthropic/mid-1", "work/big-1",
+                                      "xai/grok-x", "google/free-1", "openrouter/fast-1"], cat
+    assert cat[0]["reasoning"] and cat[0]["thinking"] == ["low", "high"] and not cat[3]["thinking"]
+
     with tempfile.TemporaryDirectory() as d:
-        PRIVATE_ROOT = Path(d) / "private"
+        PRIVATE_ROOT, CONFIG_DIR = Path(d) / "private", Path(d) / "config"
         run = Path(d) / "run"
         (run / "stage1").mkdir(parents=True)
         (run / "question.md").write_text("Q?")
-        def out(f, *a, **k):
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
-                f(*a, **k)
-            return buf.getvalue().strip()
-        opus, opus_alt, sonnet = chains()["contrarian"][:3]
-        assert out(cmd_next, run, "stage1", "contrarian") == opus
+        out(cmd_config, ["--exclude", "google/*", "--note", "Gemini is free tier"])
+        assert excluded("google/free-1") and not excluded("xai/grok-x")
+        out(cmd_models, run, catalog_text)
+        assert "google/free-1" not in [m["id"] for m in usable_models(run)]
+        good = {"contrarian": ["anthropic/big-1", "anthropic/mid-1"],
+                "first-principles": ["anthropic/big-1", "xai/grok-x"],
+                "expansionist": ["xai/grok-x", "anthropic/mid-1"],
+                "outsider": ["xai/grok-x", "anthropic/mid-1"],
+                "executor": ["anthropic/mid-1", "anthropic/big-1"],
+                "chairman": ["anthropic/big-1", "anthropic/mid-1"], "clerk": ["openrouter/fast-1"]}
+        exits(2, cmd_cast, run, text=json.dumps({**good, "outsider": ["google/free-1"]}))
+        exits(2, cmd_cast, run, text=json.dumps({**good, "clerk": ["nope/x"]}))
+        exits(2, cmd_cast, run, text=json.dumps({k: v for k, v in good.items() if k != "clerk"}))
+        out(cmd_cast, run, text=json.dumps(good))
+        # the same model through another account is inserted right after it
+        assert chains(run)["contrarian"] == ["anthropic/big-1", "work/big-1", "anthropic/mid-1"]
+        out(cmd_cast, run, reuse=True)
+        assert chains(run) == json.loads((CONFIG_DIR / "cast.json").read_text())["seats"]
+        out(cmd_models, run, catalog_text.replace("xai/grok-x", "xai/gone"))
+        exits(4, cmd_cast, run, reuse=True)          # a cast model left the catalog
+        out(cmd_models, run, catalog_text)
+        out(cmd_cast, run, reuse=True)
+
+        # failover: next untried model, run-wide memory, fail closed
+        assert out(cmd_next, run, "stage1", "contrarian") == "anthropic/big-1"
         (run / "stage1" / "contrarian.md").write_text("partial")
-        assert out(cmd_next, run, "stage1", "contrarian", failed="claude-opus-5-5") == opus_alt
+        assert out(cmd_next, run, "stage1", "contrarian", failed="big-1") == "work/big-1"
         assert not (run / "stage1" / "contrarian.md").exists()
-        # run-wide memory: Opus failed for the contrarian, so first-principles skips it
-        assert out(cmd_next, run, "stage1", "first-principles") == opus_alt
-        # native failover recorded: the alt account is skipped as well, everywhere
-        out(cmd_record, run, "stage1", "first-principles", model=sonnet)
-        assert out(cmd_next, run, "stage2", "contrarian") == sonnet
-        try:  # fail closed on a model outside the chain
-            out(cmd_next, run, "stage1", "contrarian", failed="no/such-model")
-            raise AssertionError("expected exit 2")
-        except SystemExit as e:
-            assert e.code == 2
+        assert out(cmd_next, run, "stage1", "first-principles") == "work/big-1"
+        assert out(cmd_next, run, "stage1", "first-principles", failed="work/big-1") == "xai/grok-x"
+        exits(2, cmd_next, run, "stage1", "contrarian", failed="no/such-model")
+        out(cmd_next, run, "stage1", "contrarian", failed="work/big-1")
+        exits(3, cmd_next, run, "stage1", "contrarian", failed="anthropic/mid-1")
+
         # anonymization moves answers out of reach and refuses to run twice
         (run / "stage1" / "contrarian.md").write_text("answer one")
         (run / "stage1" / "executor.md").write_text("answer two")
         out(cmd_stage2_prompt, run, seed=1)
         assert not (run / "stage1").exists()
-        assert not any(x.name == "label_map.json" for x in run.rglob("*"))
-        try:
-            out(cmd_stage2_prompt, run, seed=1)
-            raise AssertionError("expected refusal")
-        except SystemExit:
-            pass
-    PRIVATE_ROOT = Path.home() / ".llm-council" / "private"
+        assert not any(x.name in ("label_map.json", "cast.json") for x in run.rglob("*"))
+        exits("error: already anonymized (reviews may be under way); use --force to redo",
+              cmd_stage2_prompt, run, seed=1)
+    PRIVATE_ROOT, CONFIG_DIR = Path.home() / ".llm-council" / "private", Path.home() / ".llm-council"
     print("selftest OK")
 
 
@@ -717,20 +898,26 @@ def main(argv):
     if cmd == "install-subagents":
         return cmd_install_subagents("--check" in rest)
     if cmd == "seats":
-        return print("\n".join(ADVISORS))
-    if cmd in ("agent", "chain"):
+        return print("\n".join(SEAT_AGENT if "--all" in rest else ADVISORS))
+    if cmd == "agent":
         if not rest or rest[0] not in SEAT_AGENT:
             sys.exit(f"seats: {', '.join(SEAT_AGENT)}")
-        return print(SEAT_AGENT[rest[0]] if cmd == "agent" else "\n".join(chains()[rest[0]]))
+        return print(SEAT_AGENT[rest[0]])
+    if cmd == "config":
+        return cmd_config(rest)
     if not rest:
         sys.exit(__doc__)
     run = Path(rest[0])
-    if cmd == "next" and len(rest) >= 3:
+    if cmd == "models":
+        cmd_models(run, sys.stdin.read())
+    elif cmd == "cast":
+        cmd_cast(run, reuse="--reuse" in rest, text=None if "--reuse" in rest else sys.stdin.read())
+    elif cmd == "chain" and len(rest) >= 2:
+        if rest[1] not in SEAT_AGENT:
+            sys.exit(f"seats: {', '.join(SEAT_AGENT)}")
+        print("\n".join(chains(run)[rest[1]]))
+    elif cmd == "next" and len(rest) >= 3:
         cmd_next(run, rest[1], rest[2], opt("--failed"), opt("--reason"))
-    elif cmd == "record" and len(rest) >= 3:
-        if not (opt("--model") or opt("--delegation")):
-            sys.exit("error: record needs --delegation ID or --model MODEL")
-        cmd_record(run, rest[1], rest[2], model=opt("--model"), delegation=opt("--delegation"))
     elif cmd == "title-prompt":
         print(build_title_prompt(_question(run, "user_question.md")))
     elif cmd == "stage2-prompt":

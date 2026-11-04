@@ -1,12 +1,7 @@
 ---
 name: council-chairman
-description: LLM Council chairman (Opus). Synthesizes the five advisors' answers and their peer reviews into the council verdict. Use only from the llm-council skill.
+description: LLM Council chairman. Synthesizes the five advisors' answers and their peer reviews into the council verdict. Use only from the llm-council skill.
 tools: [Read, Write]
-model: anthropic/claude-opus-5-5
-fallbackModels:
-  - 8a8a7980-6e22-405e-81a1-2abed7a2c5b0/claude-opus-5-5
-  - anthropic/claude-sonnet-5-5
-  - 8a8a7980-6e22-405e-81a1-2abed7a2c5b0/claude-sonnet-5-5
 thinkingLevel: high
 permission: accept-edits
 idleTimeout: 300
