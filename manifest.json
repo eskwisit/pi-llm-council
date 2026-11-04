@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "local.llm-council",
+  "name": "LLM Council",
+  "version": "0.0.1",
+  "description": "Karpathy-style LLM Council: Opus, Sonnet and Gemini Flash answer in parallel, anonymously peer-review and rank each other, and an Opus chairman synthesizes the final answer.",
+  "author": "local",
+  "homepage": "https://github.com/karpathy/llm-council",
+  "categories": [
+    "productivity"
+  ],
+  "main": "main.js",
+  "permissions": [
+    "agent.prompt.inject"
+  ],
+  "contributes": {
+    "skills": [
+      "skills/llm-council.md"
+    ]
+  },
+  "safetyNotes": "Declarative skill only. agent.prompt.inject is used solely to index the LLM Council skill for the agent's Skill tool. main.js does nothing at runtime. The bundled scripts/council.py is run by the agent itself (via its normal shell tool) to anonymize answers, parse rankings and write a report inside the workspace run directory; it makes no network calls.",
+  "engines": {
+    "piDesktop": ">=0.9.0"
+  }
+}
