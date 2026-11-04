@@ -3,7 +3,7 @@
   "id": "eskwisit.llm-council",
   "name": "LLM Council",
   "version": "0.0.1",
-  "description": "Karpathy-style LLM Council: Opus, Sonnet and Gemini Flash persona sub-agents answer in parallel, anonymously peer-review and rank each other, and an Opus chairman synthesizes the final answer.",
+  "description": "LLM Council after Karpathy and Ole Lehmann: five thinking-lens advisors (Contrarian, First Principles, Expansionist, Outsider, Executor) on Opus, Sonnet and Gemini answer, review each other anonymously, and an Opus chairman delivers the verdict.",
   "author": "eskwisit",
   "homepage": "https://github.com/eskwisit/pi-llm-council",
   "categories": [
@@ -18,7 +18,7 @@
       "skills/llm-council.md"
     ]
   },
-  "safetyNotes": "Declarative skill only. agent.prompt.inject is used solely to index the LLM Council skill for the agent's Skill tool; main.js does nothing at runtime. The bundled scripts/council.py is run by the agent through its normal shell tool: it anonymizes answers, parses rankings and writes a report in the workspace run directory, and on request copies the five council sub-agent definitions (subagents/*.md) to ~/.agents/subagents, the only place PI-Desktop loads sub-agents from. It makes no network calls.",
+  "safetyNotes": "Declarative skill only. agent.prompt.inject is used solely to index the LLM Council skill for the agent's Skill tool; main.js does nothing at runtime. The bundled scripts/council.py is run by the agent through its normal shell tool: it anonymizes answers, parses rankings and writes a report in the workspace run directory, and on request copies the seven council sub-agent definitions (subagents/*.md) to ~/.agents/subagents, the only place PI-Desktop loads sub-agents from. During a run it keeps the secret label map and anonymized answers in ~/.llm-council/private/ so reviewers cannot read them, and it reads PI-Desktop's session log only to look up which model answered a delegation. It makes no network calls.",
   "engines": {
     "piDesktop": ">=0.9.0"
   }
