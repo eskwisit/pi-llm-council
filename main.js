@@ -8,10 +8,11 @@
  * map, ranking parsing and averaging, copying long texts into prompts and reports), so the
  * answers and reviews never have to pass through the orchestrator's context.
  *
- *   council_config     saved cast, model exclusions and notes (plugin settings); persona status
- *   council_anonymize  Stage 1 answers -> Response A, B, … in stage2_prompt.md; hides authorship
- *   council_tally      Stage 2 reviews -> aggregate.json and the chairman's stage3_prompt.md
- *   council_report     report.md and transcript.json
+ *   council, one tool with an action:
+ *     get / set    saved cast, model exclusions and notes (plugin settings); persona status
+ *     anonymize    Stage 1 answers -> Response A, B, … in stage2_prompt.md; hides authorship
+ *     tally        Stage 2 reviews -> aggregate.json and the chairman's stage3_prompt.md
+ *     report       report.md and transcript.json
  *
  * Run files live in the workspace under .llm-council/runs/<id>/ and are read and written through
  * the host's scoped pi.fs API (manifest.fs). Two things the host API cannot reach use node:fs:
@@ -457,7 +458,7 @@ async function settings() {
 async function councilConfig(args) {
   const a = isObj(args) ? args : {};
   const action = a.action || "get";
-  if (action !== "get" && action !== "set") fail('action must be "get" or "set"');
+  if (action !== "get" && action !== "set") fail('action must be "get", "set", "anonymize", "tally" or "report"');
   const catalog = strList(a.models);
   let cfg = await settings();
   const warnings = [];
@@ -506,7 +507,7 @@ async function councilConfig(args) {
 async function councilAnonymize(args) {
   const a = isObj(args) ? args : {};
   const run = runPath(a.run);
-  const models = isObj(a.models) ? a.models : {};
+  const models = isObj(a.stage1) ? a.stage1 : {};
   const prior = await loadState(run);
   if (prior && a.force !== true) fail("this run is already anonymized (reviews may be under way); pass force: true to redo it");
   const question = await readQuestion(run);
@@ -563,7 +564,7 @@ async function councilTally(args) {
   const a = isObj(args) ? args : {};
   const run = runPath(a.run);
   const state = await loadState(run);
-  if (!state) fail("this run has not been anonymized: call council_anonymize first");
+  if (!state) fail("this run has not been anonymized: run anonymize first");
   const reviewers = { ...state.reviewers, ...(isObj(a.reviewers) ? a.reviewers : {}) };
   const reviews = await readReviews(run, state, reviewers);
   const aggregate = aggregateRankings(reviews, state.labels);
@@ -657,73 +658,44 @@ const SEAT_MODELS = (what) => ({
   additionalProperties: { type: "string" },
 });
 
+const ACTIONS = { get: councilConfig, set: councilConfig, anonymize: councilAnonymize, tally: councilTally, report: councilReport };
+
 const TOOLS = [
   {
-    name: "council_config",
-    description: "LLM Council: read or save the user's council cast (models per seat), model exclusions and notes; also reports whether the persona sub-agents are installed. Use only from the llm-council skill.",
+    name: "council",
+    description: "LLM Council: get/set the cast, exclusions and notes; anonymize the Stage 1 answers; tally the Stage 2 rankings; write the report. Use only from the llm-council skill.",
     risk: "low",
     schema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["get", "set"], description: "get (default) or set" },
-        models: { type: "array", items: { type: "string" }, description: "Model ids from your 'Available models for delegation' list; empty when there is none" },
-        cast: { type: "object", description: "set: { seat: [model, fallback, …] } for every seat", additionalProperties: { type: "array", items: { type: "string" } } },
+        action: { type: "string", enum: ["get", "set", "anonymize", "tally", "report"], description: "get (default): read the config; set: save it; anonymize, tally, report: run steps, need run" },
+        models: { type: "array", items: { type: "string" }, description: "get/set: model ids from your 'Available models for delegation' list" },
+        cast: { type: "object", description: "set: { seat: [model, fallback, …] } for every seat; report: the cast used", additionalProperties: { type: "array", items: { type: "string" } } },
         exclude: { type: "array", items: { type: "string" }, description: "set: glob patterns to exclude, e.g. google/*" },
         include: { type: "array", items: { type: "string" }, description: "set: exclusion patterns to remove" },
         notes: { type: "array", items: { type: "string" }, description: "set: notes to keep, e.g. why a model is excluded" },
         clear: { type: "boolean", description: "set: forget the cast, exclusions and notes first" },
-      },
-    },
-    execute: councilConfig,
-  },
-  {
-    name: "council_anonymize",
-    description: "LLM Council: shuffle the Stage 1 answers of a run into Response A, B, …, write <run>/stage2_prompt.md and hide which advisor wrote which. Use only from the llm-council skill.",
-    risk: "low",
-    schema: {
-      type: "object",
-      properties: {
         run: RUN_ARG,
-        models: SEAT_MODELS("Model each advisor answered on in Stage 1"),
-        force: { type: "boolean", description: "Redo an anonymization that already ran" },
-        seed: { type: "integer", description: "Fixed shuffle seed (tests only)" },
-        shuffle: { type: "boolean", description: "false keeps the seat order (tests only)" },
-      },
-      required: ["run"],
-    },
-    execute: councilAnonymize,
-  },
-  {
-    name: "council_tally",
-    description: "LLM Council: parse the Stage 2 rankings of a run, average them per advisor, write <run>/aggregate.json and the chairman prompt <run>/stage3_prompt.md. Use only from the llm-council skill.",
-    risk: "low",
-    schema: {
-      type: "object",
-      properties: { run: RUN_ARG, reviewers: SEAT_MODELS("Model each advisor reviewed on in Stage 2") },
-      required: ["run"],
-    },
-    execute: councilTally,
-  },
-  {
-    name: "council_report",
-    description: "LLM Council: write <run>/report.md and <run>/transcript.json from the run's files. Use only from the llm-council skill.",
-    risk: "low",
-    schema: {
-      type: "object",
-      properties: {
-        run: RUN_ARG,
-        title: { type: "string", description: "The run title, 3 to 5 words" },
-        chairman: { type: "string", description: "Model the chairman ran on" },
-        cast: { type: "object", description: "The cast used, { seat: [models] }" },
+        stage1: SEAT_MODELS("anonymize: model each advisor answered on"),
+        reviewers: SEAT_MODELS("tally: model each advisor reviewed on"),
+        force: { type: "boolean", description: "anonymize: redo one that already ran" },
+        seed: { type: "integer", description: "anonymize: fixed shuffle seed (tests only)" },
+        shuffle: { type: "boolean", description: "anonymize: false keeps the seat order (tests only)" },
+        title: { type: "string", description: "report: the run title, 3 to 5 words" },
+        chairman: { type: "string", description: "report: model the chairman ran on" },
         failovers: {
           type: "array",
-          description: "Every seat that failed: { stage, seat, failed, reason, next } (next empty when the seat was dropped)",
+          description: "report: every seat that failed: { stage, seat, failed, reason, next } (next empty when the seat was dropped)",
           items: { type: "object", properties: { stage: { type: "string" }, seat: { type: "string" }, failed: { type: "string" }, reason: { type: "string" }, next: { type: "string" } } },
         },
       },
-      required: ["run"],
     },
-    execute: councilReport,
+    execute: async (args, ctx) => {
+      const a = isObj(args) ? args : {};
+      const fn = ACTIONS[a.action || "get"];
+      if (!fn) fail('action must be "get", "set", "anonymize", "tally" or "report"');
+      return fn(a, ctx);
+    },
   },
 ];
 

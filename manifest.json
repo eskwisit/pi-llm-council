@@ -14,41 +14,47 @@
 		"en": {
 			"name": "LLM Council",
 			"description": "A council of five advisors (Contrarian, First Principles, Expansionist, Outsider, Executor), cast from your own models, answers your question, reviews the answers anonymously, and a chairman delivers the verdict.",
-			"safetyNotes": "Agent tools plus a skill; no network access and no process execution. agent.prompt.inject indexes the LLM Council skill for the Skill tool. agent.tool.register adds four tools the agent calls during a council run (council_config, council_anonymize, council_tally, council_report); fs.read and fs.write are scoped to .llm-council/** in the workspace, where each run keeps its files. Beyond the host file API the plugin uses Node fs for two things: on load it copies its seven council-*.md persona sub-agents to ~/.agents/subagents (the only place PI-Desktop loads sub-agents from) and removes them on unload unless you edited them; during a run it keeps the label map and the hidden Stage 1 answers in its private data directory, pruned after 30 days. The saved cast, model exclusions and notes are plugin settings. Anonymity is best effort: a sub-agent that goes looking could still read the plugin data directory."
+			"safetyNotes": "Agent tools plus a skill; no network access and no process execution. agent.prompt.inject indexes the LLM Council skill for the Skill tool. agent.tool.register adds one tool the agent calls during a council run (council, with the actions get, set, anonymize, tally and report); fs.read and fs.write are scoped to .llm-council/** in the workspace, where each run keeps its files. Beyond the host file API the plugin uses Node fs for two things: on load it copies its six council-*.md persona sub-agents to ~/.agents/subagents (the only place PI-Desktop loads sub-agents from) and removes them on unload unless you edited them; during a run it keeps the label map and the hidden Stage 1 answers in its private data directory, pruned after 30 days. The saved cast, model exclusions and notes are plugin settings. Anonymity is best effort: a sub-agent that goes looking could still read the plugin data directory."
 		},
 		"zh-CN": {
 			"name": "LLM 委员会",
 			"description": "由五位顾问（反对者、第一性原理思考者、扩张者、局外人、执行者）组成的委员会，从你自己的模型中选派，回答你的问题并匿名互评，最后由主席给出裁决。",
-			"safetyNotes": "智能体工具加一个技能；不访问网络，不运行进程。agent.prompt.inject 用于为 Skill 工具索引 LLM 委员会技能。agent.tool.register 注册四个在委员会运行期间由智能体调用的工具（council_config、council_anonymize、council_tally、council_report）；fs.read 与 fs.write 仅限工作区中的 .llm-council/**，每次运行的文件都保存在那里。在宿主文件 API 之外，插件仅用 Node fs 做两件事：加载时将七个 council-*.md 角色子智能体复制到 ~/.agents/subagents（PI-Desktop 唯一加载子智能体的位置），卸载时删除它们（你修改过的除外）；运行期间将标签映射和隐藏的第一阶段回答保存在插件私有数据目录中，30 天后清理。已保存的模型分配、模型排除和备注保存在插件设置中。匿名性只是尽力而为：刻意查找的子智能体仍可能读取插件数据目录。"
+			"safetyNotes": "智能体工具加一个技能；不访问网络，不运行进程。agent.prompt.inject 用于为 Skill 工具索引 LLM 委员会技能。agent.tool.register 注册一个在委员会运行期间由智能体调用的工具（council，操作为 get、set、anonymize、tally、report）；fs.read 与 fs.write 仅限工作区中的 .llm-council/**，每次运行的文件都保存在那里。在宿主文件 API 之外，插件仅用 Node fs 做两件事：加载时将六个 council-*.md 角色子智能体复制到 ~/.agents/subagents（PI-Desktop 唯一加载子智能体的位置），卸载时删除它们（你修改过的除外）；运行期间将标签映射和隐藏的第一阶段回答保存在插件私有数据目录中，30 天后清理。已保存的模型分配、模型排除和备注保存在插件设置中。匿名性只是尽力而为：刻意查找的子智能体仍可能读取插件数据目录。"
 		}
 	},
-	"safetyNotes": "Agent tools plus a skill; no network access and no process execution. agent.prompt.inject indexes the LLM Council skill for the Skill tool. agent.tool.register adds four tools the agent calls during a council run (council_config, council_anonymize, council_tally, council_report); fs.read and fs.write are scoped to .llm-council/** in the workspace, where each run keeps its files. Beyond the host file API the plugin uses Node fs for two things: on load it copies its seven council-*.md persona sub-agents to ~/.agents/subagents (the only place PI-Desktop loads sub-agents from) and removes them on unload unless you edited them; during a run it keeps the label map and the hidden Stage 1 answers in its private data directory, pruned after 30 days. The saved cast, model exclusions and notes are plugin settings. Anonymity is best effort: a sub-agent that goes looking could still read the plugin data directory.",
+	"safetyNotes": "Agent tools plus a skill; no network access and no process execution. agent.prompt.inject indexes the LLM Council skill for the Skill tool. agent.tool.register adds one tool the agent calls during a council run (council, with the actions get, set, anonymize, tally and report); fs.read and fs.write are scoped to .llm-council/** in the workspace, where each run keeps its files. Beyond the host file API the plugin uses Node fs for two things: on load it copies its six council-*.md persona sub-agents to ~/.agents/subagents (the only place PI-Desktop loads sub-agents from) and removes them on unload unless you edited them; during a run it keeps the label map and the hidden Stage 1 answers in its private data directory, pruned after 30 days. The saved cast, model exclusions and notes are plugin settings. Anonymity is best effort: a sub-agent that goes looking could still read the plugin data directory.",
 	"changelog": "First release: five advisors cast from your own models answer your question, review each other anonymously, and a chairman delivers the verdict.",
 	"contributes": {
 		"skills": ["skills/llm-council.md"],
 		"agentTools": [
 			{
-				"name": "council_config",
-				"description": "LLM Council: read or save the user's council cast (models per seat), model exclusions and notes; also reports whether the persona sub-agents are installed. Use only from the llm-council skill.",
+				"name": "council",
+				"description": "LLM Council: get/set the cast, exclusions and notes; anonymize the Stage 1 answers; tally the Stage 2 rankings; write the report. Use only from the llm-council skill.",
 				"risk": "low",
 				"schema": {
 					"type": "object",
 					"properties": {
 						"action": {
 							"type": "string",
-							"enum": ["get", "set"],
-							"description": "get (default) or set"
+							"enum": [
+								"get",
+								"set",
+								"anonymize",
+								"tally",
+								"report"
+							],
+							"description": "get (default): read the config; set: save it; anonymize, tally, report: run steps, need run"
 						},
 						"models": {
 							"type": "array",
 							"items": {
 								"type": "string"
 							},
-							"description": "Model ids from your 'Available models for delegation' list; empty when there is none"
+							"description": "get/set: model ids from your 'Available models for delegation' list"
 						},
 						"cast": {
 							"type": "object",
-							"description": "set: { seat: [model, fallback, …] } for every seat",
+							"description": "set: { seat: [model, fallback, …] } for every seat; report: the cast used",
 							"additionalProperties": {
 								"type": "array",
 								"items": {
@@ -80,88 +86,48 @@
 						"clear": {
 							"type": "boolean",
 							"description": "set: forget the cast, exclusions and notes first"
-						}
-					}
-				}
-			},
-			{
-				"name": "council_anonymize",
-				"description": "LLM Council: shuffle the Stage 1 answers of a run into Response A, B, …, write <run>/stage2_prompt.md and hide which advisor wrote which. Use only from the llm-council skill.",
-				"risk": "low",
-				"schema": {
-					"type": "object",
-					"properties": {
+						},
 						"run": {
 							"type": "string",
 							"description": "The run directory, e.g. .llm-council/runs/20260101-120000"
 						},
-						"models": {
+						"stage1": {
 							"type": "object",
-							"description": "Model each advisor answered on in Stage 1: { seat: model id } for contrarian, first-principles, expansionist, outsider, executor",
+							"description": "anonymize: model each advisor answered on: { seat: model id } for contrarian, first-principles, expansionist, outsider, executor",
+							"additionalProperties": {
+								"type": "string"
+							}
+						},
+						"reviewers": {
+							"type": "object",
+							"description": "tally: model each advisor reviewed on: { seat: model id } for contrarian, first-principles, expansionist, outsider, executor",
 							"additionalProperties": {
 								"type": "string"
 							}
 						},
 						"force": {
 							"type": "boolean",
-							"description": "Redo an anonymization that already ran"
+							"description": "anonymize: redo one that already ran"
 						},
 						"seed": {
 							"type": "integer",
-							"description": "Fixed shuffle seed (tests only)"
+							"description": "anonymize: fixed shuffle seed (tests only)"
 						},
 						"shuffle": {
 							"type": "boolean",
-							"description": "false keeps the seat order (tests only)"
-						}
-					},
-					"required": ["run"]
-				}
-			},
-			{
-				"name": "council_tally",
-				"description": "LLM Council: parse the Stage 2 rankings of a run, average them per advisor, write <run>/aggregate.json and the chairman prompt <run>/stage3_prompt.md. Use only from the llm-council skill.",
-				"risk": "low",
-				"schema": {
-					"type": "object",
-					"properties": {
-						"run": {
-							"type": "string",
-							"description": "The run directory, e.g. .llm-council/runs/20260101-120000"
+							"description": "anonymize: false keeps the seat order (tests only)"
 						},
-						"reviewers": {
-							"type": "object",
-							"description": "Model each advisor reviewed on in Stage 2: { seat: model id } for contrarian, first-principles, expansionist, outsider, executor",
-							"additionalProperties": {
-								"type": "string"
-							}
-						}
-					},
-					"required": ["run"]
-				}
-			},
-			{
-				"name": "council_report",
-				"description": "LLM Council: write <run>/report.md and <run>/transcript.json from the run's files. Use only from the llm-council skill.",
-				"risk": "low",
-				"schema": {
-					"type": "object",
-					"properties": {
-						"run": {
+						"title": {
 							"type": "string",
-							"description": "The run directory, e.g. .llm-council/runs/20260101-120000"
+							"description": "report: the run title, 3 to 5 words"
 						},
 						"chairman": {
 							"type": "string",
-							"description": "Model the chairman ran on"
-						},
-						"cast": {
-							"type": "object",
-							"description": "The cast used, { seat: [models] }"
+							"description": "report: model the chairman ran on"
 						},
 						"failovers": {
 							"type": "array",
-							"description": "Every seat that failed: { stage, seat, failed, reason, next } (next empty when the seat was dropped)",
+							"description": "report: every seat that failed: { stage, seat, failed, reason, next } (next empty when the seat was dropped)",
 							"items": {
 								"type": "object",
 								"properties": {
@@ -183,8 +149,7 @@
 								}
 							}
 						}
-					},
-					"required": ["run"]
+					}
 				}
 			}
 		],
