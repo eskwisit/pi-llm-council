@@ -15,7 +15,7 @@
  *
  * Run files live in the workspace under .llm-council/runs/<id>/ and are read and written through
  * the host's scoped pi.fs API (manifest.fs). Two things the host API cannot reach use node:fs:
- *   - the seven persona sub-agents are copied to ~/.agents/subagents on load (the only place
+ *   - the six persona sub-agents are copied to ~/.agents/subagents on load (the only place
  *     PI-Desktop loads sub-agents from) and removed on unload;
  *   - the label map and the hidden Stage 1 answers of a run are kept in memory and in the
  *     plugin's private data directory (pi.plugin.getDataPath()).
@@ -39,13 +39,11 @@ const ADVISOR_SEATS = ADVISORS.map(([seat]) => seat);
 const SEAT_AGENT = Object.fromEntries([
   ...ADVISORS.map(([seat, agent]) => [seat, agent]),
   ["chairman", "council-chairman"],
-  ["clerk", "council-clerk"],
 ]);
 const SEATS = Object.keys(SEAT_AGENT);
 const DISPLAY = Object.fromEntries([
   ...ADVISORS.map(([seat, , name]) => [seat, name]),
   ["chairman", "The Chairman"],
-  ["clerk", "The Clerk"],
 ]);
 const MARKER = "Use only from the llm-council skill.";
 const RUN_RE = /^\.llm-council\/runs\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -144,7 +142,7 @@ function buildCast(requested, catalog, exclude) {
       warnings.push(`all advisors are on one model family (${[...used][0]}) although ${[...avail].sort().join(", ")} are available: the review loses model diversity`);
     }
     for (const seat of SEATS) {
-      if (seat !== "clerk" && cast[seat].length === 1) warnings.push(`${seat} has no fallback model`);
+      if (cast[seat].length === 1) warnings.push(`${seat} has no fallback model`);
     }
   }
   return { cast, warnings };
@@ -241,7 +239,7 @@ One concrete next step, not a list.
 Be direct and commit to a view: the user convened the council for clarity that a single answer could not give.`;
 }
 
-/** Tidy the clerk's title: trim, drop wrapping quotes, cap at 50 characters. */
+/** Tidy the run title: trim, drop wrapping quotes, cap at 50 characters. */
 function cleanTitle(title) {
   const t = str(title).trim().replace(/^["']+|["']+$/g, "").trim();
   if (!t) return "LLM Council";
@@ -631,7 +629,7 @@ async function councilReport(args) {
   let verdict = str(await readFile(`${run}/stage3/chairman.md`)).trim();
   if (!stage1.length) verdict = "All models failed to respond. Please try again.";
   if (!verdict) verdict = "Error: the chairman could not write the verdict.";
-  const title = cleanTitle(await readFile(`${run}/title.txt`));
+  const title = cleanTitle(str(a.title) || (await readFile(`${run}/title.txt`)));
   const transcript = {
     title,
     user_question: await readQuestion(run, "user_question.md"),
@@ -714,6 +712,7 @@ const TOOLS = [
       type: "object",
       properties: {
         run: RUN_ARG,
+        title: { type: "string", description: "The run title, 3 to 5 words" },
         chairman: { type: "string", description: "Model the chairman ran on" },
         cast: { type: "object", description: "The cast used, { seat: [models] }" },
         failovers: {
