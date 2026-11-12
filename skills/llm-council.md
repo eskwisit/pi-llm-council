@@ -1,19 +1,13 @@
 ---
 name: LLM Council
-description: the user says "council this", "ask the council", "pressure-test this", or brings a real decision or tradeoff they want examined by several advisors, peer-reviewed anonymously and settled by a chairman verdict
+description: the user says "council this", "ask the council" or "pressure-test this", or brings a real decision or tradeoff for several advisors to examine, peer-review anonymously and settle with a chairman verdict
 ---
 
 # LLM Council
 
 You are the **orchestrator**. You do not answer the question yourself. You cast the council from
-the models this user actually has, frame the question, convene five advisor sub-agents, run an
-anonymous peer review, have the chairman write the verdict, and present the result.
-
-The design combines two sources:
-- **Karpathy's llm-council:** different models, anonymized peer ranking, a chairman synthesis and an
-  aggregate leaderboard.
-- **Ole Lehmann's llm-council skill:** five thinking lenses that deliberately pull against each
-  other, context framing, blind-spot review questions and a structured verdict.
+the user's models, frame the question, convene five advisor sub-agents, run an anonymous peer
+review, have the chairman write the verdict, and present the result.
 
 ```
 question ─► CAST      read the user's delegation models, assign one per seat (reuse a saved cast)
@@ -46,36 +40,36 @@ If the user explicitly asks for the council anyway, run it.
 | `outsider` | `council-outsider` | Fresh eyes, no context, curse of knowledge | Strong, ideally another vendor or family than the chairman's |
 | `executor` | `council-executor` | Can it be done? What happens Monday morning? | Strong practical "balanced" model |
 | `chairman` | `council-chairman` | Writes the verdict | Strongest reasoning model with long context |
-| `clerk` | `council-clerk` | Writes the title | Cheapest fast model |
 
 The lenses create three tensions:
 - **Contrarian ↔ Expansionist:** downside against upside.
 - **First Principles ↔ Executor:** rethink it against just do it.
 - **Outsider:** keeps everyone honest.
 
-The personas carry lens, tools (Read/Write; the clerk has only Write) and timeouts, but **no
-model**. Models are cast per user, at run time, from their own catalog. Never use generic
+The personas carry lens, tools (Read/Write) and timeouts, but **no model**. Models are cast per user, at run time, from their own catalog. Never use generic
 sub-agents (`explorer`, `fixer`, …) for a seat.
 
-## The council tools
+## The council tool
 
-The plugin registers four tools. They may be listed as on-demand tools under a plugin-prefixed
-name ending in `council_config`, `council_anonymize`, `council_tally` and `council_report`; if they
-are not active yet, call `ToolSearch` with `council` to activate them. Only you call them, never a
-sub-agent. They work in Agent mode only.
+The plugin registers one tool, `council`, listed as an on-demand tool under a plugin-prefixed name
+ending in `council`; if it is not active yet, call `ToolSearch` with `council`. Only you call it,
+never a sub-agent. It works in Agent mode only. Its `action` selects the step:
 
-| Tool | Does |
+| `action` | Does |
 |---|---|
-| `council_config` | Reads or saves the cast, the model exclusions and notes; reports whether the personas are installed |
-| `council_anonymize` | Shuffles the Stage 1 answers into `stage2_prompt.md` and hides who wrote which |
-| `council_tally` | Parses the Stage 2 rankings, writes `aggregate.json` and the chairman's `stage3_prompt.md` |
-| `council_report` | Writes `report.md` and `transcript.json` |
+| `get` (default) | Reads the cast, the model exclusions and notes; reports whether the personas are installed |
+| `set` | Saves them |
+| `anonymize` | Shuffles the Stage 1 answers into `stage2_prompt.md` and hides who wrote which |
+| `tally` | Parses the Stage 2 rankings, writes `aggregate.json` and the chairman's `stage3_prompt.md` |
+| `report` | Writes `report.md` and `transcript.json` |
+
+Below, `council <action>` means a call of this tool with that `action`.
 
 ## Setup
 
-1. **Check the personas.** Call `council_config` with `models` set to the model ids of your
+1. **Check the personas.** Call `council get` with `models` set to the model ids of your
    "Available models for delegation" list (an empty list if there is none). Its `personas` field
-   says whether the plugin installed the seven `council-*` sub-agents. They must appear in your
+   says whether the plugin installed the six `council-*` sub-agents. They must appear in your
    Task agent list. If they don't, tell the user to start a new session, and stop.
 2. **Pick the run directory.** Use `RUN=.llm-council/runs/<YYYYmmdd-HHMMSS>`, **inside the
    workspace**: sub-agents read and write workspace-relative paths, and the council tools only
@@ -84,13 +78,13 @@ sub-agent. They work in Agent mode only.
 
 ## Step 0: cast the council
 
-1. **Reuse a saved cast if possible.** The `council_config` result from Setup has `castUsable`,
+1. **Reuse a saved cast if possible.** The `council get` result from Setup has `castUsable`,
    `cast`, `staleSeats`, `excludedModels` and `notes`. Note any user notes, such as "free tier".
    If `castUsable` is true, use that cast and go to Step 1.
 2. **Cast from the non-excluded models.** For each seat, give an ordered list: the primary model,
    then 1–3 fallbacks.
    - **Match the "Model to cast" column above**, using what you know about each model. Prefer
-     `reasoning` models for the Opus-like seats and fast `standard` ones for the clerk.
+     `reasoning` models for the Opus-like seats.
    - **Prefer vendor diversity** across the five advisors when more than one vendor is usable. It
      is Karpathy's core idea: different models have different blind spots.
    - **Avoid free-tier, preview or rate-limited models** for advisors and the chairman. They stall
@@ -100,10 +94,10 @@ sub-agent. They work in Agent mode only.
 3. **Confirm with the user.** Show the cast as a table (seat, lens, model, fallbacks) and ask the
    user to confirm or change it. Ask once; later runs reuse it.
    - If the user rules out a model or provider ("Gemini is free tier"), record it with
-     `council_config` `{ action: "set", exclude: ["google/*"], notes: ["Gemini is free tier"] }`
+     `council set` `{ exclude: ["google/*"], notes: ["Gemini is free tier"] }`
      and recast.
-4. **Save the cast.** Call `council_config` `{ action: "set", models: [...], cast: { "contrarian":
-   ["<id>", "<fallback>"], …, "clerk": ["<id>"] } }` with every seat. It rejects unknown or
+4. **Save the cast.** Call `council set` `{ models: [...], cast: { "contrarian":
+   ["<id>", "<fallback>"], …, "chairman": ["<id>", "<fallback>"] } }` with every seat. It rejects unknown or
    excluded ids, returns warnings (for example, no vendor diversity) and the final `cast`, whose
    chains you use from now on.
 5. **No catalog.** If you have no delegation models, cast every seat as `["inherit"]`, launch every
@@ -136,7 +130,6 @@ Launch every seat with `model:` set to its current model (see Failover; omit `mo
 | Delegation | Agent | Brief |
 |---|---|---|
 | Stage 1 | the seat's `council-*` persona | `Stage 1. The question is in <RUN>/question.md. Save your answer to <RUN>/stage1/<seat>.md.` Add `Length: up to 600 words.` if the question needs more room. |
-| Title | `council-clerk` | `Write the result to <RUN>/title.txt. Prompt: Write a title of 3 to 5 words for the question below, with no quotes and no punctuation.` followed by a blank line and the user's words from `user_question.md` (cut to 2000 characters). |
 | Stage 2 | the same advisor persona, in a fresh session | `Stage 2. The review prompt is <RUN>/stage2_prompt.md. Save your review to <RUN>/stage2/<seat>.md.` |
 | Stage 3 | `council-chairman` | `The chairman prompt is <RUN>/stage3_prompt.md. Save the council verdict to <RUN>/stage3/chairman.md.` |
 
@@ -153,9 +146,9 @@ A seat has **failed** when any of these happens:
 - **Error:** the delegation ends failed or stopped, or reports an error (503, overloaded, rate
   limit, quota).
 - **No first response:** an advisor or the chairman starts by reading its brief file. If it shows
-  0 tool calls 45 s after launch, it has failed. The clerk has 60 s to finish.
+  0 tool calls 45 s after launch, it has failed.
 - **Stall:** it passes its idle timeout (advisors 120 s, chairman 300 s) or its maximum duration
-  (advisors 600 s, chairman 900 s, clerk 120 s).
+  (advisors 600 s, chairman 900 s).
 - **No output:** it finishes without a non-empty output file.
 
 When a seat fails, in the same turn:
@@ -179,10 +172,10 @@ deadline. Handle each seat the moment it settles or misses a deadline.
 
 1. **Cast and frame:** Setup, Step 0, then Step 1.
 2. **Stage 1.**
-   - Start the five advisors and the clerk in ONE message, then run the watch loop.
-   - If every advisor seat is dropped, call `council_report` and tell the user that all models
+   - Start the five advisors in ONE message, then run the watch loop.
+   - If every advisor seat is dropped, call `council report` and tell the user that all models
      failed to respond.
-3. **Anonymize:** call `council_anonymize` `{ run, models: { <seat>: <model it answered on>, … } }`.
+3. **Anonymize:** call `council anonymize` `{ run, stage1: { <seat>: <model it answered on>, … } }`.
    It writes `stage2_prompt.md` and empties the Stage 1 files; the plugin keeps the answers and
    the label map. If it warns that the prompt is long, add `Read it in pages with offset.` to the
    Stage 2 briefs.
@@ -190,14 +183,15 @@ deadline. Handle each seat the moment it settles or misses a deadline.
    - Run **every** advisor seat. A seat whose Stage 1 answer failed still reviews, as in the
      original.
    - Start the five reviews in ONE message, then run the watch loop.
-5. **Tally:** call `council_tally` `{ run, reviewers: { <seat>: <model it reviewed on>, … } }`. It
+5. **Tally:** call `council tally` `{ run, reviewers: { <seat>: <model it reviewed on>, … } }`. It
    returns the street-cred table. For each entry in `parseWarnings`, show that reviewer's raw
    ranking text.
 6. **Stage 3.**
    - Run the chairman delegation under the watch loop.
    - If its chain is exhausted, continue: the report records that the chairman could not write
      the verdict.
-7. **Report:** call `council_report` `{ run, chairman: <model>, cast, failovers: [...] }`.
+7. **Report:** write a title of 3 to 5 words for the question, with no quotes and no punctuation,
+   then call `council report` `{ run, title, chairman: <model>, cast, failovers: [...] }`.
 
 ## Presenting the result
 
@@ -224,35 +218,3 @@ Then give:
 3. **Links** to `report.md` and `transcript.json`.
 
 Do not smooth over disagreement.
-
-## Design notes
-
-**From Karpathy's design:**
-- parallel Stage 1;
-- anonymized Response labels;
-- every member also ranks its own answer;
-- a strict `FINAL RANKING:` format;
-- a chairman synthesis;
-- average-rank aggregation;
-- graceful degradation.
-
-**From Lehmann's design:**
-- the five lenses and their tensions;
-- context framing, with one clarifying question at most;
-- the three review questions;
-- the five-part verdict;
-- the chairman may side with a dissenter;
-- "don't council trivial questions".
-
-**Our own choices:**
-- **Prompts:** the review, chairman and title prompts are written for this plugin.
-- **Casting:** models are cast per user from their delegation catalog, with exclusions and a saved
-  cast.
-- **Labels:** shuffled.
-- **Aggregation:** per advisor seat.
-- **Parser:** reads the **last** `FINAL RANKING`, case-insensitive, with word boundaries and
-  deduplication.
-- **Privacy:** during review the Stage 1 files are emptied and the label map stays with the
-  plugin. This is best effort: models may recognise their own writing, and a sub-agent that goes
-  looking could still read the plugin's data directory.
-- **Failover:** immediate, along each seat's cast chain, with run-wide failure memory.
