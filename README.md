@@ -24,7 +24,6 @@ It combines two designs:
 | The Outsider | Fresh eyes, no context; catches the curse of knowledge | a strong model, ideally another vendor |
 | The Executor | Can it be done? What do you do Monday morning? | a strong practical model |
 | Chairman | Synthesizes the answers and reviews into the verdict | your strongest reasoning model |
-| Clerk | Titles the run | your cheapest fast model |
 
 The lenses create three tensions:
 - **Contrarian ↔ Expansionist:** downside against upside.
@@ -96,8 +95,8 @@ report.
 | Part | Where | Role |
 |---|---|---|
 | Orchestrator | `skills/llm-council.md`, a plugin skill | Casting, framing, stages, failover, presentation |
-| Persona sub-agents | `subagents/*.md`, installed to `~/.agents/subagents/` | `council-contrarian`, `council-first-principles`, `council-expansionist`, `council-outsider`, `council-executor`, `council-chairman`, `council-clerk`. Each carries its lens, thinking level, Read/Write tools and timeouts. None names a model |
-| Agent tools | `main.js` | `council_config` (cast, exclusions, notes), `council_anonymize` (shuffle and hide authorship), `council_tally` (rankings, street cred, chairman prompt), `council_report` (report and transcript) |
+| Persona sub-agents | `subagents/*.md`, installed to `~/.agents/subagents/` | `council-contrarian`, `council-first-principles`, `council-expansionist`, `council-outsider`, `council-executor`, `council-chairman`. Each carries its lens, thinking level, Read/Write tools and timeouts. None names a model |
+| Agent tool | `main.js` | `council`, one tool with an `action`: `get`/`set` (cast, exclusions, notes), `anonymize` (shuffle and hide authorship), `tally` (rankings, street cred, chairman prompt), `report` (report and transcript) |
 
 PI-Desktop plugins can contribute skills and agent tools but not sub-agents, which load only from
 `~/.agents/subagents/`. So the plugin copies its personas there when it loads and removes them when
@@ -108,7 +107,7 @@ it unloads (a persona you edited is left alone).
 | Permission | Why |
 |---|---|
 | `agent.prompt.inject` | indexes the LLM Council skill so the agent can load it |
-| `agent.tool.register` | the four `council_*` tools the agent calls during a run |
+| `agent.tool.register` | the `council` tool the agent calls during a run |
 | `fs.read`, `fs.write` | reading and writing the run files, limited to `.llm-council/**` in the workspace |
 
 `agent.prompt.inject`, `agent.tool.register` and `fs.write` are high-risk permissions. The plugin
@@ -121,7 +120,7 @@ It **can**:
 - read and write files under `.llm-council/` in your workspace, where each run keeps its question,
   answers, reviews, prompts and report. During review it empties the Stage 1 answer files so
   reviewers cannot tell who wrote which
-- copy its seven `council-*.md` personas to `~/.agents/subagents/` on load, and remove them on
+- copy its six `council-*.md` personas to `~/.agents/subagents/` on load, and remove them on
   unload unless you edited them
 - keep each run's label map and Stage 1 answers in its private data directory
   (`~/.pi-desktop/plugins/data/eskwisit.llm-council/runs/`), deleted after 30 days
@@ -132,7 +131,7 @@ It **cannot** and does not:
 - access the network, so nothing leaves your computer except through the models you cast
 - run programs or shell commands, or load code
 - read or write workspace files outside `.llm-council/`
-- touch any file in `~/.agents/subagents/` other than its own seven `council-*.md` personas (and
+- touch any file in `~/.agents/subagents/` other than its own six `council-*.md` personas (and
   obsolete council personas it shipped before, recognised by their "Use only from the llm-council
   skill." marker)
 
@@ -172,8 +171,9 @@ The council's design follows [karpathy/llm-council](https://github.com/karpathy/
 anonymous peer ranking and a chairman synthesis) and
 [Ole Lehmann's llm-council skill](https://github.com/aiwithremy/claude-skills-llm-council) (the
 five advisor lenses, the framing step, the review questions and the verdict structure). The
-review, chairman and title prompts and the code are written for this plugin, and the advisor
-personas adapt Lehmann's lenses. Neither repository declares a license.
+review and chairman prompts and the code are written for this plugin, and the advisor
+personas adapt Lehmann's lenses. Neither repository declares a license. What comes from each
+source is listed in [docs/design-notes.md](docs/design-notes.md).
 
 ## License
 
