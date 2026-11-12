@@ -25,7 +25,7 @@ named rather than given line numbers so the notes stay correct while the code ch
 ## Risk tier
 
 - `agent.prompt.inject` indexes one skill, `skills/llm-council.md`. The skill tells the agent how
-  to run a council: cast models, write the question, delegate to the seven personas, and call the
+  to run a council: cast models, write the question, delegate to the six personas, and call the
   four plugin tools. It contains no shell commands.
 - `agent.tool.register` adds four tools (below). Each declares `risk: "low"`: none reads outside
   `.llm-council/`, writes outside it, deletes anything, or reaches the network. The host still
@@ -38,7 +38,7 @@ named rather than given line numbers so the notes stay correct while the code ch
 | Permission | Used for | Host calls | Where |
 |---|---|---|---|
 | `agent.prompt.inject` | The LLM Council skill in the agent's skill catalog | none at runtime (`contributes.skills`) | `manifest.json` |
-| `agent.tool.register` | `council_config`, `council_anonymize`, `council_tally`, `council_report` | `pi.agent.registerTool`, `pi.agent.unregisterTool` | `onLoad()`, `onUnload()` |
+| `agent.tool.register` | `council` (actions `get`, `set`, `anonymize`, `tally`, `report`) | `pi.agent.registerTool`, `pi.agent.unregisterTool` | `onLoad()`, `onUnload()` |
 | `fs.read` (scope `.llm-council/**`) | Reading the run's question, answers, reviews, title and verdict | `pi.fs.readText`, `pi.fs.list` | `readFile()`, `readSeatFiles()`, `readQuestion()` |
 | `fs.write` (scope `.llm-council/**`) | Writing `stage2_prompt.md`, `aggregate.json`, `stage3_prompt.md`, `report.md`, `transcript.json`; emptying `stage1/<seat>.md` | `pi.fs.writeText` | `councilAnonymize()`, `councilTally()`, `councilReport()` |
 
@@ -57,7 +57,7 @@ tool input:
 
 | What | Path | Operations | Where | Bounds |
 |---|---|---|---|---|
-| Persona install | `~/.agents/subagents/` (`os.homedir()`), the only place PI-Desktop loads sub-agents from | `mkdir`, write the 7 `council-*.md` files shipped in `subagents/` when missing or different | `installPersonas()`, from `onLoad()` | Fixed file names. Errors are caught; the status is reported by `council_config` |
+| Persona install | `~/.agents/subagents/` (`os.homedir()`), the only place PI-Desktop loads sub-agents from | `mkdir`, write the 6 `council-*.md` files shipped in `subagents/` when missing or different | `installPersonas()`, from `onLoad()` | Fixed file names. Errors are caught; the status is reported by `council get` |
 | Obsolete personas | same | delete a `council-*.md` file that is not one of the 7 **and** contains the marker "Use only from the llm-council skill." | `installPersonas()` | Only files this plugin shipped in an earlier version |
 | Persona removal | same | delete each of the 7 files **only if its content equals the shipped file** | `removePersonas()`, from `onUnload()` | A persona the user edited is kept |
 | Run state | `<getDataPath()>/runs/<sha256(run)[0:16]>.json` | `mkdir` (mode 700), write (mode 600) via a temp file and rename, read, delete files older than 30 days | `saveState()`, `loadState()`, `pruneStates()` | File names are hashes; nothing outside the plugin's data directory |
@@ -66,15 +66,15 @@ tool input:
 
 | Tool | Input | Reads | Writes | Returns |
 |---|---|---|---|---|
-| `council_config` | `action` get/set, model ids, cast, exclusions, notes | plugin settings | plugin settings (set only); a cast is validated against the given model ids and exclusions first | cast, staleness, exclusions, notes, persona status |
-| `council_anonymize` | `run`, models per seat, `force` | `<run>/question.md`, `<run>/stage1/*.md` | `<run>/stage2_prompt.md`; empties `<run>/stage1/<seat>.md`; run state | counts, warnings |
-| `council_tally` | `run`, reviewer models | `<run>/question.md`, `<run>/stage2/*.md`, run state | `<run>/aggregate.json`, `<run>/stage3_prompt.md`, run state | parsed rankings, average ranks, parse warnings |
-| `council_report` | `run`, chairman model, cast, failovers | the run files and run state | `<run>/report.md`, `<run>/transcript.json` | title, paths |
+| `council get` / `set` | model ids, cast, exclusions, notes | plugin settings | plugin settings (set only); a cast is validated against the given model ids and exclusions first | cast, staleness, exclusions, notes, persona status |
+| `council anonymize` | `run`, `stage1` models per seat, `force` | `<run>/question.md`, `<run>/stage1/*.md` | `<run>/stage2_prompt.md`; empties `<run>/stage1/<seat>.md`; run state | counts, warnings |
+| `council tally` | `run`, `reviewers` models | `<run>/question.md`, `<run>/stage2/*.md`, run state | `<run>/aggregate.json`, `<run>/stage3_prompt.md`, run state | parsed rankings, average ranks, parse warnings |
+| `council report` | `run`, `title`, chairman model, cast, failovers | the run files and run state | `<run>/report.md`, `<run>/transcript.json` | title, paths |
 
 `run` must match `^\.llm-council/runs/[A-Za-z0-9][A-Za-z0-9._-]*$` after a leading `./` and
 trailing slashes are removed (`runPath()`), so `..`, absolute paths and nested paths are rejected
 before any file call; `pi.fs` enforces the manifest scope again. Stage files are read only when
-their name is an advisor seat (`readSeatFiles()`). `council_anonymize` refuses to run twice on one
+their name is an advisor seat (`readSeatFiles()`). `council anonymize` refuses to run twice on one
 run unless `force: true`, so reviews under way are not reshuffled by accident.
 
 ### Untrusted text
@@ -118,7 +118,7 @@ and `HOME`), never the real ones:
    (not moved to the trash) during review. The label map and answers sit in the plugin's data
    directory, which agents can still read if they go looking, and models may recognise their own
    writing. The README says so.
-5. **Third-party text.** The review, chairman and title prompts are written for this plugin; a
+5. **Third-party text.** The review and chairman prompts are written for this plugin; a
    test checks that the upstream templates' sentences are absent.
 
 ## Known limits
@@ -160,6 +160,6 @@ $ grep -nE "require\(|child_process|fetch\(|XMLHttpRequest|WebSocket|eval|Functi
 PluginCheck (PI-Desktop) passes with one warning: the high-risk permissions `agent.prompt.inject`,
 `agent.tool.register` and `fs.write` need an explicit user grant. The release workflow packages
 the tracked runtime files only: `LICENSE`, `README.md`, `main.js`, `manifest.json`,
-`skills/llm-council.md` and the seven `subagents/*.md`.
+`skills/llm-council.md` and the six `subagents/*.md`.
 
 [SECURITY.md]: https://github.com/vastsa/pi-desktop-plugins/blob/main/SECURITY.md
