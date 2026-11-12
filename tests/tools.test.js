@@ -17,7 +17,6 @@ const CAST = {
   outsider: ["xai/grok-x", "anthropic/mid-1"],
   executor: ["anthropic/mid-1", "anthropic/big-1"],
   chairman: ["anthropic/big-1", "anthropic/mid-1"],
-  clerk: ["openrouter/fast-1"],
 };
 const ANSWERS = {
   contrarian: "The fatal flaw is the timeline.",
@@ -57,10 +56,10 @@ function review(order) {
   return `Some analysis.\n\nFINAL RANKING:\n${order.map((l, i) => `${i + 1}. Response ${l}`).join("\n")}`;
 }
 
-describe("council_config", () => {
+describe("council get/set", () => {
   it("saves a validated cast, exclusions and notes in the plugin settings", async () => {
     const { pi } = await fresh();
-    const out = await pi.call("council_config", { action: "set", models: CATALOG, exclude: ["google/*"], notes: ["Gemini is free tier"], cast: CAST });
+    const out = await pi.call("council", { action: "set", models: CATALOG, exclude: ["google/*"], notes: ["Gemini is free tier"], cast: CAST });
     assert.deepEqual(out.cast.contrarian, ["anthropic/big-1", "work/big-1", "anthropic/mid-1"]);
     assert.equal(out.castUsable, true);
     assert.deepEqual(out.excludedModels, ["google/free-1"]);
@@ -72,33 +71,33 @@ describe("council_config", () => {
 
   it("reports a saved cast as stale when a primary model leaves the catalog", async () => {
     const { pi } = await fresh();
-    await pi.call("council_config", { action: "set", models: CATALOG, cast: CAST });
-    const gone = await pi.call("council_config", { models: CATALOG.filter((m) => m !== "xai/grok-x") });
+    await pi.call("council", { action: "set", models: CATALOG, cast: CAST });
+    const gone = await pi.call("council", { models: CATALOG.filter((m) => m !== "xai/grok-x") });
     assert.equal(gone.castUsable, false);
     assert.deepEqual(gone.staleSeats, ["expansionist", "outsider"]);
     assert.deepEqual(gone.cast["first-principles"], ["anthropic/big-1", "work/big-1"]); // the gone fallback is dropped
-    const back = await pi.call("council_config", { models: CATALOG });
+    const back = await pi.call("council", { models: CATALOG });
     assert.equal(back.castUsable, true);
   });
 
   it("rejects an invalid cast without saving it, and include/clear undo exclusions", async () => {
     const { pi } = await fresh();
-    await pi.call("council_config", { action: "set", exclude: ["google/*", "xai/*"] });
-    await assert.rejects(pi.call("council_config", { action: "set", models: CATALOG, cast: CAST }), /expansionist: xai\/grok-x is excluded/);
+    await pi.call("council", { action: "set", exclude: ["google/*", "xai/*"] });
+    await assert.rejects(pi.call("council", { action: "set", models: CATALOG, cast: CAST }), /expansionist: xai\/grok-x is excluded/);
     assert.equal(pi.store.cast, undefined);
-    const inc = await pi.call("council_config", { action: "set", include: ["xai/*"] });
+    const inc = await pi.call("council", { action: "set", include: ["xai/*"] });
     assert.deepEqual(inc.exclude, ["google/*"]);
-    const cleared = await pi.call("council_config", { action: "set", clear: true });
+    const cleared = await pi.call("council", { action: "set", clear: true });
     assert.deepEqual([cleared.exclude, cleared.notes, cleared.cast], [[], [], {}]);
-    await assert.rejects(pi.call("council_config", { action: "drop" }), /action must be/);
+    await assert.rejects(pi.call("council", { action: "drop" }), /action must be/);
   });
 });
 
-describe("council_anonymize", () => {
+describe("council anonymize", () => {
   it("writes an anonymous review prompt, empties the Stage 1 files and refuses to run twice", async () => {
     const { dirs, pi } = await fresh();
     seedRun(dirs);
-    const out = await pi.call("council_anonymize", { run: RUN, models: MODELS, seed: 3 });
+    const out = await pi.call("council", { action: "anonymize", run: RUN, stage1: MODELS, seed: 3 });
     assert.equal(out.responses, 5);
     const prompt = get(dirs, `${RUN}/stage2_prompt.md`);
     for (const text of Object.values(ANSWERS)) assert.ok(prompt.includes(text), text);
@@ -109,9 +108,9 @@ describe("council_anonymize", () => {
     // nothing in the workspace maps labels to seats
     const all = fs.readdirSync(path.join(dirs.workspace, RUN), { recursive: true }).join(" ");
     assert.ok(!/label|map|cast/.test(all), all);
-    await assert.rejects(pi.call("council_anonymize", { run: RUN }), /already anonymized/);
+    await assert.rejects(pi.call("council", { action: "anonymize", run: RUN }), /already anonymized/);
     // force redoes it from the hidden answers
-    const again = await pi.call("council_anonymize", { run: RUN, force: true, seed: 4 });
+    const again = await pi.call("council", { action: "anonymize", run: RUN, force: true, seed: 4 });
     assert.equal(again.responses, 5);
   });
 
@@ -119,28 +118,28 @@ describe("council_anonymize", () => {
     const { dirs, pi } = await fresh();
     seedRun(dirs, { contrarian: "only one", executor: "   " });
     put(dirs, `${RUN}/stage1/notes.md`, "stray");
-    const out = await pi.call("council_anonymize", { run: RUN, models: MODELS });
+    const out = await pi.call("council", { action: "anonymize", run: RUN, stage1: MODELS });
     assert.equal(out.responses, 1);
     assert.ok(out.warnings.some((w) => w.includes("notes.md")));
     const { dirs: d2, pi: p2 } = await fresh();
     put(d2, `${RUN}/question.md`, "Q");
-    await assert.rejects(p2.call("council_anonymize", { run: RUN }), /no Stage 1 answers/);
+    await assert.rejects(p2.call("council", { action: "anonymize", run: RUN }), /no Stage 1 answers/);
     const { pi: p3 } = await fresh();
-    await assert.rejects(p3.call("council_anonymize", { run: "../../etc" }), /run must be/);
+    await assert.rejects(p3.call("council", { action: "anonymize", run: "../../etc" }), /run must be/);
   });
 });
 
-describe("council_tally and council_report", () => {
+describe("council tally and report", () => {
   it("scores the reviews per advisor, writes the chairman prompt, then the report", async () => {
     const { dirs, pi, t } = await fresh();
     seedRun(dirs);
-    await pi.call("council_anonymize", { run: RUN, models: MODELS, shuffle: false });
+    await pi.call("council", { action: "anonymize", run: RUN, stage1: MODELS, shuffle: false });
     // without shuffling, labels follow the seat files sorted by name:
     // A contrarian, B executor, C expansionist, D first-principles, E outsider
     put(dirs, `${RUN}/stage2/contrarian.md`, review(["D", "A", "B", "C", "E"]));
     put(dirs, `${RUN}/stage2/executor.md`, review(["D", "B", "A", "C", "E"]));
     put(dirs, `${RUN}/stage2/outsider.md`, "I liked Response D best. No formal ranking.");
-    const tally = await pi.call("council_tally", { run: RUN, reviewers: { contrarian: "anthropic/mid-1" } });
+    const tally = await pi.call("council", { action: "tally", run: RUN, reviewers: { contrarian: "anthropic/mid-1" } });
     assert.equal(tally.streetCred[0].advisor, "The First Principles Thinker");
     assert.equal(tally.streetCred[0].average_rank, 1);
     assert.deepEqual(tally.parseWarnings.map((w) => w.seat), ["outsider"]);
@@ -153,7 +152,7 @@ describe("council_tally and council_report", () => {
 
     put(dirs, `${RUN}/stage3/chairman.md`, "## Where the Council Agrees\n- port it");
     put(dirs, `${RUN}/title.txt`, '"Port The Helper"\n');
-    const rep = await pi.call("council_report", {
+    const rep = await pi.call("council", { action: "report",
       run: RUN,
       chairman: "anthropic/big-1",
       failovers: [{ stage: "stage1", seat: "outsider", failed: "xai/grok-x", reason: "503", next: "anthropic/mid-1" }],
@@ -175,14 +174,14 @@ describe("council_tally and council_report", () => {
   it("keeps the run state across a plugin restart", async () => {
     const { dirs, pi, main } = await fresh();
     seedRun(dirs);
-    await pi.call("council_anonymize", { run: RUN, models: MODELS });
+    await pi.call("council", { action: "anonymize", run: RUN, stage1: MODELS });
     put(dirs, `${RUN}/stage2/executor.md`, review(["A", "B", "C", "D", "E"]));
     await main.onUnload();
     const pi2 = fakePi(dirs);
     const main2 = loadMain(pi2);
     await main2.onLoad();
     cleanups.push(() => main2.onUnload());
-    const tally = await pi2.call("council_tally", { run: RUN });
+    const tally = await pi2.call("council", { action: "tally", run: RUN });
     assert.equal(tally.streetCred.length, 5);
     assert.ok(get(dirs, `${RUN}/stage3_prompt.md`).includes(ANSWERS.executor));
   });
@@ -190,8 +189,8 @@ describe("council_tally and council_report", () => {
   it("refuses to tally before anonymizing, and reports a run where every advisor failed", async () => {
     const { dirs, pi } = await fresh();
     put(dirs, `${RUN}/question.md`, "Q");
-    await assert.rejects(pi.call("council_tally", { run: RUN }), /council_anonymize first/);
-    const rep = await pi.call("council_report", { run: RUN });
+    await assert.rejects(pi.call("council", { action: "tally", run: RUN }), /anonymize first/);
+    const rep = await pi.call("council", { action: "report", run: RUN });
     assert.equal(rep.title, "LLM Council");
     assert.match(get(dirs, `${RUN}/report.md`), /All models failed to respond/);
   });

@@ -41,19 +41,19 @@ describe("personas", () => {
     for (const agent of Object.values(t.SEAT_AGENT)) {
       assert.deepEqual(fs.readFileSync(path.join(target, `${agent}.md`)), fs.readFileSync(path.join(ROOT, "subagents", `${agent}.md`)));
     }
-    assert.equal(pi.tools.size, 4);
+    assert.equal(pi.tools.size, 1);
     // the user edits one persona: it survives unload, the others go
-    fs.appendFileSync(path.join(target, "council-clerk.md"), "\nmy tweak\n");
+    fs.appendFileSync(path.join(target, "council-chairman.md"), "\nmy tweak\n");
     await main.onUnload();
-    assert.deepEqual(fs.readdirSync(target).sort(), ["council-clerk.md", "council-mine.md"]);
-    assert.deepEqual(pi.unregistered.sort(), ["council_anonymize", "council_config", "council_report", "council_tally"]);
+    assert.deepEqual(fs.readdirSync(target).sort(), ["council-chairman.md", "council-mine.md"]);
+    assert.deepEqual(pi.unregistered.sort(), ["council"]);
   });
 
-  it("a failed install does not break loading; council_config reports it", async () => {
+  it("a failed install does not break loading; council get reports it", async () => {
     const { pi, main, dirs } = setup();
     fs.writeFileSync(path.join(dirs.home, ".agents"), "a file where the directory should be");
     await main.onLoad();
-    const out = await pi.call("council_config", {});
+    const out = await pi.call("council", {});
     assert.match(out.personas, /could not install/);
     await main.onUnload();
   });

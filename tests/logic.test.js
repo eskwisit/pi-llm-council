@@ -102,7 +102,6 @@ const GOOD = {
   outsider: ["xai/grok-x", "anthropic/mid-1"],
   executor: ["anthropic/mid-1", "anthropic/big-1"],
   chairman: ["anthropic/big-1", "anthropic/mid-1"],
-  clerk: ["openrouter/fast-1"],
 };
 
 describe("buildCast", () => {
@@ -113,9 +112,9 @@ describe("buildCast", () => {
   });
   it("rejects excluded, unknown and missing seats, listing every problem", () => {
     assert.throws(() => t.buildCast({ ...GOOD, outsider: ["google/free-1"] }, CATALOG, ["google/*"]), /outsider: google\/free-1 is excluded/);
-    assert.throws(() => t.buildCast({ ...GOOD, clerk: ["nope/x"] }, CATALOG, []), /clerk: nope\/x is not in the delegation catalog/);
-    const { clerk, ...noClerk } = GOOD;
-    assert.throws(() => t.buildCast(noClerk, CATALOG, []), /clerk: no model given/);
+    assert.throws(() => t.buildCast({ ...GOOD, chairman: ["nope/x"] }, CATALOG, []), /chairman: nope\/x is not in the delegation catalog/);
+    const { chairman, ...noChairman } = GOOD;
+    assert.throws(() => t.buildCast(noChairman, CATALOG, []), /chairman: no model given/);
     assert.throws(() => t.buildCast({ ...GOOD, judge: ["xai/grok-x"] }, CATALOG, []), /unknown seat/);
   });
   it("warns about a single model family and a missing fallback", () => {
@@ -123,7 +122,7 @@ describe("buildCast", () => {
     const { warnings } = t.buildCast(mono, CATALOG, ["google/*"]);
     assert.ok(warnings.some((w) => /one model family \(mid\)/.test(w)), warnings.join("\n"));
     assert.ok(warnings.includes("contrarian has no fallback model"));
-    assert.ok(!warnings.includes("clerk has no fallback model"));
+    assert.ok(warnings.includes("chairman has no fallback model"));
   });
   it("accepts inherit when there is no catalog", () => {
     const all = Object.fromEntries(Object.keys(GOOD).map((s) => [s, ["inherit"]]));
@@ -136,8 +135,8 @@ describe("staleSeats", () => {
     const { cast } = t.buildCast(GOOD, CATALOG, []);
     assert.deepEqual(t.staleSeats(cast, CATALOG, []), []);
     assert.deepEqual(t.staleSeats(cast, CATALOG.filter((m) => m !== "xai/grok-x"), []), ["expansionist", "outsider"]);
-    assert.deepEqual(t.staleSeats(cast, CATALOG, ["openrouter/*"]), ["clerk"]);
-    assert.equal(t.staleSeats({}, CATALOG, []).length, 7);
+    assert.deepEqual(t.staleSeats(cast, CATALOG, ["anthropic/big*"]), ["contrarian", "first-principles", "chairman"]);
+    assert.equal(t.staleSeats({}, CATALOG, []).length, 6);
   });
 });
 
