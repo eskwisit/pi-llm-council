@@ -18,8 +18,8 @@ const MAIN = path.join(ROOT, "main.js");
 const INTERNALS = [
   "parseRanking", "aggregateRankings", "buildReviewPrompt", "buildChairmanPrompt", "cleanTitle",
   "globMatch", "buildCast", "staleSeats", "shuffle", "runPath", "installPersonas", "removePersonas",
-  "councilConfig", "councilAnonymize", "councilTally", "councilReport", "TOOLS", "SEAT_AGENT",
-  "ADVISOR_SEATS", "MARKER", "states",
+  "councilConfig", "councilAnonymize", "councilTally", "councilReport", "councilStart", "councilNext",
+  "nextModel", "readFailovers", "TOOLS", "SEAT_AGENT", "ADVISOR_SEATS", "MARKER", "states",
 ];
 
 /** Compile a fresh copy of main.js bound to `pi`. Returns `{ ...exports, __t }`. */

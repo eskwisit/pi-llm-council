@@ -94,7 +94,9 @@ describe("manifest", () => {
   });
 
   it("asks for the permissions the code uses, with scopes limited to the run directories", () => {
-    assert.deepEqual(manifest.permissions.slice().sort(), ["agent.prompt.inject", "agent.tool.register", "fs.read", "fs.write"]);
+    assert.deepEqual(manifest.permissions.slice().sort(), ["agent.extension", "agent.prompt.inject", "agent.tool.register", "fs.read", "fs.write"]);
+    assert.deepEqual(manifest.contributes.agentExtensions, ["extension/council-guard.js"]);
+    for (const f of manifest.contributes.agentExtensions) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
     assert.deepEqual(manifest.fs.read.scope, [".llm-council/**"]);
     assert.deepEqual(manifest.fs.write.scope, [".llm-council/**"]);
     assert.deepEqual(manifest.contributes.settings.map((s) => s.key).sort(), ["cast", "excludeModels", "modelNotes"]);
