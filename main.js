@@ -10,6 +10,7 @@
  *
  *   council, one tool with an action:
  *     get / set    saved cast, model exclusions and notes (plugin settings); persona status
+ *     start / next the model each seat launches on, and the failover bookkeeping (failovers.json)
  *     anonymize    Stage 1 answers -> Response A, B, … in stage2_prompt.md; hides authorship
  *     tally        Stage 2 reviews -> aggregate.json and the chairman's stage3_prompt.md
  *     report       report.md and transcript.json
@@ -458,7 +459,7 @@ async function settings() {
 async function councilConfig(args) {
   const a = isObj(args) ? args : {};
   const action = a.action || "get";
-  if (action !== "get" && action !== "set") fail('action must be "get", "set", "anonymize", "tally" or "report"');
+  if (action !== "get" && action !== "set") fail(ACTION_ERROR);
   const catalog = strList(a.models);
   let cfg = await settings();
   const warnings = [];
@@ -596,6 +597,80 @@ async function councilTally(args) {
   };
 }
 
+// ---------- failover (run/failovers.json) ----------
+const STAGES = ["stage1", "stage2", "stage3"];
+const failoverRecord = (f) => ({ stage: str(f.stage), seat: str(f.seat), failed: str(f.failed), reason: str(f.reason), next: str(f.next) });
+
+/**
+ * The first model of `chain` that is not in `failed`; with `after`, only the models behind that
+ * one count. Empty string when none is left (the seat is dropped).
+ */
+function nextModel(chain, failed, after) {
+  const models = strList(chain);
+  const from = after == null ? 0 : models.indexOf(after) + 1;
+  return models.slice(from).find((m) => !failed.includes(m)) || "";
+}
+
+/** { failed: [model…], failovers: [{ stage, seat, failed, reason, next }] } of a run; empty when the file is missing. */
+async function readFailovers(run) {
+  let data = null;
+  try {
+    data = JSON.parse(str(await readFile(`${run}/failovers.json`)));
+  } catch {
+    // missing or unreadable: start empty
+  }
+  if (!isObj(data)) data = {};
+  return {
+    failed: strList(data.failed),
+    failovers: (Array.isArray(data.failovers) ? data.failovers : []).filter(isObj).map(failoverRecord),
+  };
+}
+
+function checkStage(stage) {
+  if (!STAGES.includes(stage)) fail(`stage must be one of ${STAGES.join(", ")}, got ${JSON.stringify(stage)}`);
+  return stage;
+}
+
+/** The saved chain of each seat, from the plugin settings. */
+async function seatChains(seats) {
+  const { cast } = await settings();
+  const chains = {};
+  for (const seat of seats) {
+    if (!SEATS.includes(seat)) fail(`unknown seat ${JSON.stringify(seat)}; seats are ${SEATS.join(", ")}`);
+    chains[seat] = strList(cast[seat]);
+    if (!chains[seat].length) fail(`no cast saved for ${seat}: call council set first`);
+  }
+  return chains;
+}
+
+async function councilStart(args) {
+  const a = isObj(args) ? args : {};
+  const run = runPath(a.run);
+  if (a.stage !== undefined) checkStage(str(a.stage));
+  const seats = [...new Set([...strList(a.seats), ...(typeof a.seat === "string" ? [a.seat.trim()] : strList(a.seat))])].filter(Boolean);
+  if (!seats.length) fail("seats must list the seats to launch");
+  const chains = await seatChains(seats);
+  const { failed } = await readFailovers(run);
+  const models = Object.fromEntries(seats.map((s) => [s, nextModel(chains[s], failed)]));
+  return { models, dropped: seats.filter((s) => !models[s]), failed };
+}
+
+async function councilNext(args) {
+  const a = isObj(args) ? args : {};
+  const run = runPath(a.run);
+  const stage = checkStage(str(a.stage));
+  const seat = str(a.seat).trim();
+  const chain = (await seatChains([seat]))[seat];
+  const failed = str(a.failed).trim();
+  if (!failed) fail("failed must be the id of the model that failed");
+  const log = await readFailovers(run);
+  if (!log.failed.includes(failed)) log.failed.push(failed);
+  const next = nextModel(chain, log.failed, failed);
+  log.failovers.push({ stage, seat, failed, reason: str(a.reason).trim() || "error", next });
+  await pi.fs.writeText(`${run}/failovers.json`, JSON.stringify(log, null, 2));
+  return { next, dropped: !next, failed: log.failed, failovers: log.failovers };
+}
+
 function reportMarkdown({ title, question, chairman, verdict, aggregate, failovers, reviews, stage1 }) {
   const out = [`# ${title}`, "", `**Question:** ${question}`, "", "## Stage 3: council verdict", `_Chairman: ${chairman}_`, "", verdict, "",
     "## Stage 2: street cred", "", "| # | Response | Advisor | Model | Avg rank | Votes |", "|---|---|---|---|---|---|"];
@@ -618,9 +693,12 @@ async function councilReport(args) {
   const run = runPath(a.run);
   const question = await readQuestion(run);
   const state = await loadState(run);
-  const failovers = (Array.isArray(a.failovers) ? a.failovers : []).filter(isObj).map((f) => ({
-    stage: str(f.stage), seat: str(f.seat), failed: str(f.failed), reason: str(f.reason), next: str(f.next) || null,
-  }));
+  // failovers recorded by `next`, plus any the orchestrator still passes by hand (older skill)
+  const log = await readFailovers(run);
+  const key = (f) => `${f.stage}/${f.seat}/${f.failed}`;
+  const given = (Array.isArray(a.failovers) ? a.failovers : []).filter(isObj).map(failoverRecord);
+  const failovers = [...log.failovers, ...given.filter((g) => !log.failovers.some((f) => key(f) === key(g)))]
+    .map((f) => ({ ...f, next: f.next || null }));
   const reviews = state ? await readReviews(run, state, state.reviewers || {}) : [];
   const aggregate = state ? aggregateRankings(reviews, state.labels) : [];
   const stage1 = state
@@ -658,17 +736,18 @@ const SEAT_MODELS = (what) => ({
   additionalProperties: { type: "string" },
 });
 
-const ACTIONS = { get: councilConfig, set: councilConfig, anonymize: councilAnonymize, tally: councilTally, report: councilReport };
+const ACTIONS = { get: councilConfig, set: councilConfig, start: councilStart, next: councilNext, anonymize: councilAnonymize, tally: councilTally, report: councilReport };
+const ACTION_ERROR = 'action must be "get", "set", "start", "next", "anonymize", "tally" or "report"';
 
 const TOOLS = [
   {
     name: "council",
-    description: "LLM Council: get/set the cast, exclusions and notes; anonymize the Stage 1 answers; tally the Stage 2 rankings; write the report. Use only from the llm-council skill.",
+    description: "LLM Council: get/set the cast, exclusions and notes; start/next pick each seat's model and record failovers; anonymize the Stage 1 answers; tally the Stage 2 rankings; write the report. Use only from the llm-council skill.",
     risk: "low",
     schema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["get", "set", "anonymize", "tally", "report"], description: "get (default): read the config; set: save it; anonymize, tally, report: run steps, need run" },
+        action: { type: "string", enum: ["get", "set", "start", "next", "anonymize", "tally", "report"], description: "get (default): read the config; set: save it; start, next, anonymize, tally, report: run steps, need run" },
         models: { type: "array", items: { type: "string" }, description: "get/set: model ids from your 'Available models for delegation' list" },
         cast: { type: "object", description: "set: { seat: [model, fallback, …] } for every seat; report: the cast used", additionalProperties: { type: "array", items: { type: "string" } } },
         exclude: { type: "array", items: { type: "string" }, description: "set: glob patterns to exclude, e.g. google/*" },
@@ -676,6 +755,11 @@ const TOOLS = [
         notes: { type: "array", items: { type: "string" }, description: "set: notes to keep, e.g. why a model is excluded" },
         clear: { type: "boolean", description: "set: forget the cast, exclusions and notes first" },
         run: RUN_ARG,
+        stage: { type: "string", enum: STAGES, description: "start/next: the stage being launched" },
+        seats: { type: "array", items: { type: "string" }, description: "start: the seats to launch; returns the model each one starts on (empty: seat dropped)" },
+        seat: { type: "string", description: "next: the seat whose model failed (start: one seat)" },
+        failed: { type: "string", description: "next: the model that failed; never used again in this run" },
+        reason: { type: "string", description: "next: why, in a few words (503, no first response, stall, no output)" },
         stage1: SEAT_MODELS("anonymize: model each advisor answered on"),
         reviewers: SEAT_MODELS("tally: model each advisor reviewed on"),
         force: { type: "boolean", description: "anonymize: redo one that already ran" },
@@ -685,7 +769,7 @@ const TOOLS = [
         chairman: { type: "string", description: "report: model the chairman ran on" },
         failovers: {
           type: "array",
-          description: "report: every seat that failed: { stage, seat, failed, reason, next } (next empty when the seat was dropped)",
+          description: "report: failovers not recorded with next (the plugin reads the run's failovers.json itself)",
           items: { type: "object", properties: { stage: { type: "string" }, seat: { type: "string" }, failed: { type: "string" }, reason: { type: "string" }, next: { type: "string" } } },
         },
       },
@@ -693,7 +777,7 @@ const TOOLS = [
     execute: async (args, ctx) => {
       const a = isObj(args) ? args : {};
       const fn = ACTIONS[a.action || "get"];
-      if (!fn) fail('action must be "get", "set", "anonymize", "tally" or "report"');
+      if (!fn) fail(ACTION_ERROR);
       return fn(a, ctx);
     },
   },
