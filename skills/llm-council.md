@@ -59,9 +59,11 @@ never a sub-agent. It works in Agent mode only. Its `action` selects the step:
 |---|---|
 | `get` (default) | Reads the cast, the model exclusions and notes; reports whether the personas are installed |
 | `set` | Saves them |
+| `start` | `{ run, stage, seats }`: the model each seat launches on, skipping models that failed in this run |
+| `next` | `{ run, stage, seat, failed, reason }`: records the failure and returns the seat's `next` model (empty: seat dropped) |
 | `anonymize` | Shuffles the Stage 1 answers into `stage2_prompt.md` and hides who wrote which |
 | `tally` | Parses the Stage 2 rankings, writes `aggregate.json` and the chairman's `stage3_prompt.md` |
-| `report` | Writes `report.md` and `transcript.json` |
+| `report` | Writes `report.md` and `transcript.json` (it reads the failovers itself) |
 
 Below, `council <action>` means a call of this tool with that `action`.
 
@@ -99,7 +101,7 @@ Below, `council <action>` means a call of this tool with that `action`.
 4. **Save the cast.** Call `council set` `{ models: [...], cast: { "contrarian":
    ["<id>", "<fallback>"], …, "chairman": ["<id>", "<fallback>"] } }` with every seat. It rejects unknown or
    excluded ids, returns warnings (for example, no vendor diversity) and the final `cast`, whose
-   chains you use from now on.
+   chains `council start` and `council next` use from now on.
 5. **No catalog.** If you have no delegation models, cast every seat as `["inherit"]`, launch every
    seat without `model`, and warn the user that the council has no model diversity.
 
@@ -124,8 +126,8 @@ Below, `council <action>` means a call of this tool with that `action`.
 
 ## Briefs
 
-Launch every seat with `model:` set to its current model (see Failover; omit `model` only for
-`inherit`). Always start a **new** delegation; never `resume`.
+Launch every seat with `model:` set to what `council start` or `council next` returned (omit `model`
+only for `inherit`). Always start a **new** delegation; the plugin blocks `resume` on a seat.
 
 | Delegation | Agent | Brief |
 |---|---|---|
@@ -138,9 +140,10 @@ path yourself, unchanged.
 
 ## Failover: no seat dangles
 
-Keep, for this run: each seat's chain (from the cast), the model each seat is on in each stage,
-and the set of models that **failed anywhere in the run**. A failed model is never retried, and it
-is skipped by every later seat and stage of the run.
+The plugin keeps the bookkeeping in `$RUN/failovers.json`: a failed model is never retried, and it
+is skipped by every later seat and stage of the run. Before each stage, call `council start`
+`{ run, stage, seats: [...] }` and launch each seat on the model it returns; a seat with an empty
+model is dropped (see 4 below).
 
 A seat has **failed** when any of these happens:
 - **Error:** the delegation ends failed or stopped, or reports an error (503, overloaded, rate
@@ -153,16 +156,11 @@ A seat has **failed** when any of these happens:
 
 When a seat fails, in the same turn:
 1. If it is still running, `TaskStop` it.
-2. Add its model to the failed set and record a failover: `{ stage, seat, failed: <model>, reason:
-   <short reason>, next: <next model or empty> }`.
-3. The next model is the first one in the seat's chain, after the failed one, that is not in the
-   failed set. Relaunch the same persona as a fresh delegation on it; its Write replaces any
-   partial output.
-4. If no model is left, drop the seat: write an empty file to its output path so partial output
-   is not counted. This is the original's graceful degradation.
-
-The first model of a seat in each stage is the first one in its chain that is not in the failed
-set.
+2. Call `council next` `{ run, stage, seat, failed: <model>, reason: <short reason> }`.
+3. If `next` is a model, relaunch the same persona as a fresh delegation on it; its Write replaces
+   any partial output.
+4. If `next` is empty, the seat is dropped: write an empty file to its output path so partial
+   output is not counted. This is the original's graceful degradation.
 
 **Watch loop:** call `TaskWait` with `mode: "any"` and `minCompleted: 1`. Use `timeoutSeconds: 45`
 while any seat is still waiting for its first tool call; after that, use the shortest remaining
@@ -172,7 +170,7 @@ deadline. Handle each seat the moment it settles or misses a deadline.
 
 1. **Cast and frame:** Setup, Step 0, then Step 1.
 2. **Stage 1.**
-   - Start the five advisors in ONE message, then run the watch loop.
+   - `council start` for the five advisors, start them in ONE message, then run the watch loop.
    - If every advisor seat is dropped, call `council report` and tell the user that all models
      failed to respond.
 3. **Anonymize:** call `council anonymize` `{ run, stage1: { <seat>: <model it answered on>, … } }`.
@@ -182,16 +180,16 @@ deadline. Handle each seat the moment it settles or misses a deadline.
 4. **Stage 2.**
    - Run **every** advisor seat. A seat whose Stage 1 answer failed still reviews, as in the
      original.
-   - Start the five reviews in ONE message, then run the watch loop.
+   - `council start` for the five advisors, start the reviews in ONE message, then run the watch loop.
 5. **Tally:** call `council tally` `{ run, reviewers: { <seat>: <model it reviewed on>, … } }`. It
    returns the street-cred table. For each entry in `parseWarnings`, show that reviewer's raw
    ranking text.
 6. **Stage 3.**
-   - Run the chairman delegation under the watch loop.
+   - `council start` for the chairman, then run its delegation under the watch loop.
    - If its chain is exhausted, continue: the report records that the chairman could not write
      the verdict.
 7. **Report:** write a title of 3 to 5 words for the question, with no quotes and no punctuation,
-   then call `council report` `{ run, title, chairman: <model>, cast, failovers: [...] }`.
+   then call `council report` `{ run, title, chairman: <model>, cast }`.
 
 ## Presenting the result
 
