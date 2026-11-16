@@ -2,7 +2,7 @@
 	"schemaVersion": 1,
 	"id": "eskwisit.llm-council",
 	"name": "LLM Council",
-	"version": "0.16.2",
+	"version": "0.18.0",
 	"description": "A council of five advisors (Contrarian, First Principles, Expansionist, Outsider, Executor), cast from your own models, answers your question, reviews the answers anonymously, and a chairman delivers the verdict.",
 	"author": "eskwisit",
 	"license": "Apache-2.0",
@@ -23,7 +23,7 @@
 		}
 	},
 	"safetyNotes": "Agent tools plus a skill; no network access and no process execution. agent.prompt.inject indexes the LLM Council skill for the Skill tool. agent.tool.register adds one tool the agent calls during a council run (council, with the actions get, set, start, next, anonymize, tally and report; start and next pick each seat's model and record failovers in the run's failovers.json); fs.read and fs.write are scoped to .llm-council/** in the workspace, where each run keeps its files. Beyond the host file API the plugin uses Node fs for two things: on load it copies its six council-*.md persona sub-agents to ~/.agents/subagents (the only place PI-Desktop loads sub-agents from) and removes them on unload unless you edited them; during a run it keeps the label map and the hidden Stage 1 answers in its private data directory, pruned after 30 days. The saved cast, model exclusions and notes are plugin settings. agent.extension loads one small guard that, while a council run is active, blocks Task calls that would put a seat on a generic sub-agent, resume a seat, or launch a model that already failed in the run; it never blocks anything else and allows the call if it cannot read the run. Anonymity is best effort: a sub-agent that goes looking could still read the plugin data directory.",
-	"changelog": "Smaller footprint: one council tool with an action instead of four, no clerk persona (the orchestrator titles the run), shorter personas and skill. Breaking for direct callers of the old council_* tools.",
+	"changelog": "Failover bookkeeping moves into the plugin (council start / next) and a guard blocks generic agents, resume and failed models during a run.",
 	"contributes": {
 		"skills": ["skills/llm-council.md"],
 		"agentExtensions": ["extension/council-guard.js"],
