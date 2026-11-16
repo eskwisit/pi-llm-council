@@ -86,9 +86,11 @@ Each run is saved under `.llm-council/runs/<timestamp>/` in your workspace as `r
 **Failover.** No seat dangles and no failed model is retried. A seat that errors, shows no
 activity 45 s after launch, stalls past its idle or maximum time, or ends without output is
 stopped and relaunched on the next model in its cast chain: its primary model, the same model
-through your other accounts (added automatically), then the fallbacks you confirmed. A model that
-fails anywhere in a run is skipped for every later seat. Every substitution is logged in the
-report.
+through your other accounts (added automatically), then the fallbacks you confirmed. The plugin
+does the bookkeeping (`council start` / `council next`, recorded in the run's `failovers.json`): a
+model that fails anywhere in a run is skipped for every later seat, and every substitution is
+logged in the report. A small guard extension blocks, while a run is active, a seat delegated to a
+generic sub-agent, a resumed seat, or a launch on a model that already failed.
 
 ## What is in the box
 
@@ -96,7 +98,8 @@ report.
 |---|---|---|
 | Orchestrator | `skills/llm-council.md`, a plugin skill | Casting, framing, stages, failover, presentation |
 | Persona sub-agents | `subagents/*.md`, installed to `~/.agents/subagents/` | `council-contrarian`, `council-first-principles`, `council-expansionist`, `council-outsider`, `council-executor`, `council-chairman`. Each carries its lens, thinking level, Read/Write tools and timeouts. None names a model |
-| Agent tool | `main.js` | `council`, one tool with an `action`: `get`/`set` (cast, exclusions, notes), `anonymize` (shuffle and hide authorship), `tally` (rankings, street cred, chairman prompt), `report` (report and transcript) |
+| Agent tool | `main.js` | `council`, one tool with an `action`: `get`/`set` (cast, exclusions, notes), `start`/`next` (the model each seat launches on; failover bookkeeping), `anonymize` (shuffle and hide authorship), `tally` (rankings, street cred, chairman prompt), `report` (report and transcript) |
+| Guard extension | `extension/council-guard.js` | Blocks `Task` calls that break the council's rules while a run is active; never blocks anything else and fails open |
 
 PI-Desktop plugins can contribute skills and agent tools but not sub-agents, which load only from
 `~/.agents/subagents/`. So the plugin copies its personas there when it loads and removes them when
@@ -108,10 +111,11 @@ it unloads (a persona you edited is left alone).
 |---|---|
 | `agent.prompt.inject` | indexes the LLM Council skill so the agent can load it |
 | `agent.tool.register` | the `council` tool the agent calls during a run |
+| `agent.extension` | the guard that watches `Task` calls during a run |
 | `fs.read`, `fs.write` | reading and writing the run files, limited to `.llm-council/**` in the workspace |
 
-`agent.prompt.inject`, `agent.tool.register` and `fs.write` are high-risk permissions. The plugin
-has no network access and runs no programs.
+`agent.prompt.inject`, `agent.tool.register`, `agent.extension` and `fs.write` are high-risk
+permissions. The plugin has no network access and runs no programs.
 
 ### What it can and cannot do
 
@@ -162,8 +166,8 @@ node --test tests/
 
 The tests load `main.js` with a fake PI-Desktop host in a temporary folder and cover the ranking
 parser, aggregation, prompts, casting and exclusions, the full anonymize → tally → report flow,
-state surviving a restart, persona install and removal, and the manifest matching the registered
-tools.
+failover bookkeeping, the guard extension, state surviving a restart, persona install and removal,
+and the manifest matching the registered tools.
 
 ## Credits
 
